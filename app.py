@@ -486,8 +486,6 @@ def render_review_tab():
     # ── Unity Catalog scope: when connected, every sub-tab is restricted to UC terms ──
     _uc_on     = st.session_state.get('integration_connectors', {}).get('Databricks Unity', {}).get('status') == 'Connected'
     _uc_source = "Databricks Unity Catalog" if _uc_on else None
-    if _uc_on:
-        st.info("🔗 Unity Catalog connected — showing only Databricks Unity Catalog terms throughout this workflow.")
 
     # ── Queue stats bar ────────────────────────────────────────────────────────
     stats = WorkflowManager.get_queue_stats(source_filter=_uc_source)
