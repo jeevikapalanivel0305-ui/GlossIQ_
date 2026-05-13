@@ -1134,11 +1134,21 @@ def render_lineage_tab():
 
 def render_search_tab():
     render_dashboard_header("Asset Search")
-    st.markdown('<div class="workbench-header"><div class="accent-line"></div><h1 class="workbench-title">Asset Search</h1><p class="workbench-desc">Discover and select data assets from Microsoft Purview or Databricks Unity Catalog for AI analysis</p></div>', unsafe_allow_html=True)
 
     _connectors  = st.session_state.integration_connectors
     _purview_on  = _connectors.get("Microsoft Purview", {}).get("status") == "Connected"
     _db_on       = _connectors.get("Databricks Unity", {}).get("status") == "Connected"
+
+    if _purview_on and _db_on:
+        _asset_desc = "Discover and select data assets from Microsoft Purview or Databricks Unity Catalog for AI analysis"
+    elif _purview_on:
+        _asset_desc = "Discover and select data assets from Microsoft Purview for AI analysis"
+    elif _db_on:
+        _asset_desc = "Discover and select data assets from Databricks Unity Catalog for AI analysis"
+    else:
+        _asset_desc = "Discover and select data assets from Microsoft Purview or Databricks Unity Catalog for AI analysis"
+
+    st.markdown(f'<div class="workbench-header"><div class="accent-line"></div><h1 class="workbench-title">Asset Search</h1><p class="workbench-desc">{_asset_desc}</p></div>', unsafe_allow_html=True)
 
     if not _purview_on and not _db_on:
         st.warning("No data source is connected. Connect Microsoft Purview or Databricks Unity in **Integrations & API**.")
