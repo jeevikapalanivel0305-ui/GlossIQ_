@@ -434,3 +434,21 @@ div.stButton>button[kind="secondary"] {
     background: #E2E8F0;
     color: #334155;
 }
+
+/* ======================================= */
+/* INTER FONT — FETCHED SCHEMA CODE CHIPS  */
+/* ======================================= */
+
+/* Override monospace on inline code chips (detected schemas `col_name`) */
+.stMarkdown code {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    background: none !important;
+    background-color: transparent !important;
+    color: #111827 !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+}

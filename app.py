@@ -6,6 +6,7 @@ import os
 import sys
 import base64
 import html as _html
+from datetime import datetime
 
 # Ensure backend modules can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -84,6 +85,8 @@ if 'user_role' not in st.session_state:
     st.session_state.user_role = "Administrator"
 if 'user_name' not in st.session_state:
     st.session_state.user_name = "Jeevika P."
+if 'uc_search_results' not in st.session_state:
+    st.session_state.uc_search_results = []
 
 # Integration Connectors State – reinitialise if 'image' key is missing (migration guard)
 _CONNECTOR_DEFAULTS = {
@@ -119,7 +122,10 @@ if 'perm_cache' not in st.session_state:
         'search_keyword': 'Customer',
         'glossary_industry': 'General',
         'glossary_options': ['Business Term', 'Business Definition'],
-        'selected_table_ids': []   # Persists checkbox selections across tab switches
+        'selected_table_ids': [],  # Persists checkbox selections across tab switches
+        'uc_srch_cat_val': '— select catalog —',
+        'uc_srch_sch_val': '— select schema —',
+        'uc_srch_kw_val': '',
     }
 else:
     # Migrate legacy session state if it exists
@@ -1083,109 +1089,255 @@ def render_lineage_tab():
 
 def render_search_tab():
     render_dashboard_header("Asset Search")
-    st.markdown('<div class="workbench-header"><div class="accent-line"></div><h1 class="workbench-title">Asset Search</h1><p class="workbench-desc">Discover and select data assets from Microsoft Purview for AI analysis</p></div>', unsafe_allow_html=True)
-    
-    if not st.session_state.is_authenticated:
-        st.warning("Microsoft Purview is not connected.")
+    st.markdown('<div class="workbench-header"><div class="accent-line"></div><h1 class="workbench-title">Asset Search</h1><p class="workbench-desc">Discover and select data assets from Microsoft Purview or Databricks Unity Catalog for AI analysis</p></div>', unsafe_allow_html=True)
+
+    _connectors  = st.session_state.integration_connectors
+    _purview_on  = _connectors.get("Microsoft Purview", {}).get("status") == "Connected"
+    _db_on       = _connectors.get("Databricks Unity", {}).get("status") == "Connected"
+
+    if not _purview_on and not _db_on:
+        st.warning("No data source is connected. Connect Microsoft Purview or Databricks Unity in **Integrations & API**.")
         if st.button("Go to Integrations & API", use_container_width=True):
             st.session_state.selected_tab = "Integrations & API"
             st.rerun()
         return
 
-    mcol1, mcol2 = st.columns([1, 1])
-    with mcol1:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.markdown("##### Search Parameters")
-        source_type_options = {"All": "all", "Azure SQL": "azure_sql_table", "Snowflake": "snowflake_table", "Oracle": "oracle_table", "Databricks": "databricks_table", "Fabric": "fabric_lakehouse_table", "Generic Table": "Table"}
-        sc1, sc2 = st.columns(2)
-        source_options_list = list(source_type_options.keys())
-        
-        # Determine index from anchor cache
-        st_idx = source_options_list.index(st.session_state.perm_cache['search_source_type']) if st.session_state.perm_cache['search_source_type'] in source_options_list else 0
-        with sc1: st.selectbox("Source Type", source_options_list, index=st_idx, key="search_source_type_box", on_change=update_cache, args=("search_source_type", "search_source_type_box"))
-        
-        coll_options = ["All Collections"] + [c.get('friendlyName') or c.get('name') for c in st.session_state.get('purview_collections', [])]
-        cl_idx = coll_options.index(st.session_state.perm_cache['search_collection']) if st.session_state.perm_cache['search_collection'] in coll_options else 0
-        with sc2: st.selectbox("Collection", coll_options, index=cl_idx, key="search_collection_box", on_change=update_cache, args=("search_collection", "search_collection_box"))
-        
-        st.text_input("Keyword Search", value=st.session_state.perm_cache['search_keyword'], key="search_keyword_box", on_change=update_cache, args=("search_keyword", "search_keyword_box"))
-        
-        # Pull values from anchor cache for local consistency
-        selected_source_type = st.session_state.perm_cache['search_source_type']
-        search_query = st.session_state.perm_cache['search_keyword']
-        
-        if st.button("Search Assets", type="primary"):
-            connector = PurviewConnector(st.session_state.connector_creds['purview_account_name'], st.session_state.connector_creds['purview_tenant_id'], st.session_state.connector_creds['purview_client_id'], st.session_state.connector_creds['purview_client_secret'])
-            try:
-                url = f"https://{st.session_state.connector_creds['purview_account_name']}.purview.azure.com/datamap/api/search/query"
-                # Increase limit to cast wider net for filtering
-                payload = {"keywords": f"{search_query}*", "limit": 100, "filter": {"entityType": source_type_options[selected_source_type]} if selected_source_type != "All" else {}}
-                connector.authenticate()
-                import requests
-                r = requests.post(url, headers=connector._headers(), json=payload, timeout=30)
-                if r.status_code == 200: 
-                    raw_results = r.json().get('value', [])
-                    # Strict 'Starts With' Filter (Case-Insensitive)
-                    filtered_results = [
-                        res for res in raw_results 
-                        if res.get('name', '').lower().startswith(search_query.lower())
-                    ]
-                    st.session_state.purview_search_results = filtered_results
-            except Exception as e: st.error(str(e))
-        st.markdown('</div>', unsafe_allow_html=True)
+    # ── Source selector when both are connected ───────────────────────────────
+    sources_available = []
+    if _purview_on:  sources_available.append("Microsoft Purview")
+    if _db_on:       sources_available.append("Databricks Unity Catalog")
 
-    if st.session_state.purview_search_results:
-        st.markdown("### Search Results")
-        results_df = pd.DataFrame(st.session_state.purview_search_results)
-        
-        # Restore previous selections from permanent cache
-        saved_ids = st.session_state.perm_cache.get('selected_table_ids', [])
-        results_df['Select'] = results_df['qualifiedName'].apply(lambda x: x in saved_ids)
-        
-        edited_df = st.data_editor(
-            results_df[['Select', 'name', 'entityType', 'collectionId', 'qualifiedName']],
-            key="search_results_editor",
-            hide_index=True,
-            use_container_width=True
+    if len(sources_available) > 1:
+        active_source = st.radio(
+            "Select Data Source", sources_available,
+            horizontal=True, key="search_active_source",
         )
-        
-        # Immediately save selections back to permanent cache
-        current_selected = edited_df[edited_df['Select'] == True]['qualifiedName'].tolist()
-        st.session_state.perm_cache['selected_table_ids'] = current_selected
-        
-        selected_tables = [item for item in st.session_state.purview_search_results if item.get('qualifiedName') in current_selected]
-        
-        if st.button("Fetch Schemas", type="primary"):
-            connector = PurviewConnector(st.session_state.connector_creds['purview_account_name'], st.session_state.connector_creds['purview_tenant_id'], st.session_state.connector_creds['purview_client_id'], st.session_state.connector_creds['purview_client_secret'])
-            st.session_state.tables_metadata = {}
-            for table in selected_tables:
-                col_data = connector.get_table_columns_with_guids(table.get('id'))
-                st.session_state.tables_metadata[table.get('id')] = {"name": table.get('name'), "qualifiedName": table.get('qualifiedName'), "columns": list(col_data.keys()), "column_guids": col_data}
-            st.success("Schemas fetched successfully.")
+    else:
+        active_source = sources_available[0]
 
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # MICROSOFT PURVIEW SEARCH
+    # ══════════════════════════════════════════════════════════════════════════
+    if active_source == "Microsoft Purview":
+        mcol1, mcol2 = st.columns([1, 1])
+        with mcol1:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            st.markdown("##### Search Parameters")
+            source_type_options = {"All": "all", "Azure SQL": "azure_sql_table", "Snowflake": "snowflake_table", "Oracle": "oracle_table", "Databricks": "databricks_table", "Fabric": "fabric_lakehouse_table", "Generic Table": "Table"}
+            sc1, sc2 = st.columns(2)
+            source_options_list = list(source_type_options.keys())
+
+            st_idx = source_options_list.index(st.session_state.perm_cache['search_source_type']) if st.session_state.perm_cache['search_source_type'] in source_options_list else 0
+            with sc1: st.selectbox("Source Type", source_options_list, index=st_idx, key="search_source_type_box", on_change=update_cache, args=("search_source_type", "search_source_type_box"))
+
+            coll_options = ["All Collections"] + [c.get('friendlyName') or c.get('name') for c in st.session_state.get('purview_collections', [])]
+            cl_idx = coll_options.index(st.session_state.perm_cache['search_collection']) if st.session_state.perm_cache['search_collection'] in coll_options else 0
+            with sc2: st.selectbox("Collection", coll_options, index=cl_idx, key="search_collection_box", on_change=update_cache, args=("search_collection", "search_collection_box"))
+
+            st.text_input("Keyword Search", value=st.session_state.perm_cache['search_keyword'], key="search_keyword_box", on_change=update_cache, args=("search_keyword", "search_keyword_box"))
+
+            selected_source_type = st.session_state.perm_cache['search_source_type']
+            search_query = st.session_state.perm_cache['search_keyword']
+
+            if st.button("Search Assets", type="primary", key="purview_search_btn"):
+                connector = PurviewConnector(
+                    st.session_state.connector_creds['purview_account_name'],
+                    st.session_state.connector_creds['purview_tenant_id'],
+                    st.session_state.connector_creds['purview_client_id'],
+                    st.session_state.connector_creds['purview_client_secret'],
+                )
+                try:
+                    url = f"https://{st.session_state.connector_creds['purview_account_name']}.purview.azure.com/datamap/api/search/query"
+                    payload = {"keywords": f"{search_query}*", "limit": 100, "filter": {"entityType": source_type_options[selected_source_type]} if selected_source_type != "All" else {}}
+                    connector.authenticate()
+                    import requests as _req
+                    r = _req.post(url, headers=connector._headers(), json=payload, timeout=30)
+                    if r.status_code == 200:
+                        raw_results = r.json().get('value', [])
+                        filtered_results = [res for res in raw_results if res.get('name', '').lower().startswith(search_query.lower())]
+                        st.session_state.purview_search_results = filtered_results
+                except Exception as e:
+                    st.error(str(e))
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        if st.session_state.purview_search_results:
+            st.markdown("### Search Results")
+            results_df = pd.DataFrame(st.session_state.purview_search_results)
+            saved_ids = st.session_state.perm_cache.get('selected_table_ids', [])
+            results_df['Select'] = results_df['qualifiedName'].apply(lambda x: x in saved_ids)
+            edited_df = st.data_editor(
+                results_df[['Select', 'name', 'entityType', 'collectionId', 'qualifiedName']],
+                key="search_results_editor",
+                hide_index=True,
+                use_container_width=True,
+            )
+            current_selected = edited_df[edited_df['Select'] == True]['qualifiedName'].tolist()
+            st.session_state.perm_cache['selected_table_ids'] = current_selected
+            selected_tables = [item for item in st.session_state.purview_search_results if item.get('qualifiedName') in current_selected]
+
+            if st.button("Fetch Schemas", type="primary", key="purview_fetch_btn"):
+                connector = PurviewConnector(
+                    st.session_state.connector_creds['purview_account_name'],
+                    st.session_state.connector_creds['purview_tenant_id'],
+                    st.session_state.connector_creds['purview_client_id'],
+                    st.session_state.connector_creds['purview_client_secret'],
+                )
+                st.session_state.tables_metadata = {}
+                for table in selected_tables:
+                    col_data = connector.get_table_columns_with_guids(table.get('id'))
+                    st.session_state.tables_metadata[table.get('id')] = {
+                        "name": table.get('name'),
+                        "qualifiedName": table.get('qualifiedName'),
+                        "columns": list(col_data.keys()),
+                        "column_guids": col_data,
+                        "source": "purview",
+                    }
+                st.success("Schemas fetched successfully.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # DATABRICKS UNITY CATALOG SEARCH
+    # ══════════════════════════════════════════════════════════════════════════
+    else:
+        _db_cfg = _connectors.get("Databricks Unity", {})
+        _db_conn = DatabricksUnityConnector(
+            _db_cfg.get("api_endpoint", ""),
+            _db_cfg.get("api_token", ""),
+        )
+
+        st.markdown("##### Browse Unity Catalog")
+
+        fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 1])
+
+        # ── Catalog ───────────────────────────────────────────────────────────
+        with fc1:
+            if "uc_search_cats" not in st.session_state:
+                cats, cat_err = _db_conn.list_catalogs()
+                st.session_state.uc_search_cats = cats if not cat_err else []
+                if cat_err:
+                    st.error(f"Catalogs: {cat_err}")
+            cat_opts = ["— select catalog —"] + st.session_state.uc_search_cats
+            saved_cat = st.session_state.perm_cache.get("uc_srch_cat_val", "— select catalog —")
+            cat_idx = cat_opts.index(saved_cat) if saved_cat in cat_opts else 0
+            sel_cat = st.selectbox("Catalog", cat_opts, index=cat_idx, key="uc_srch_cat",
+                                   on_change=update_cache, args=("uc_srch_cat_val", "uc_srch_cat"))
+
+        # ── Schema ────────────────────────────────────────────────────────────
+        with fc2:
+            if sel_cat and sel_cat != "— select catalog —":
+                sch_cache_key = f"uc_search_schs_{sel_cat}"
+                if sch_cache_key not in st.session_state:
+                    schs, sch_err = _db_conn.list_schemas(sel_cat)
+                    st.session_state[sch_cache_key] = schs if not sch_err else []
+                    if sch_err:
+                        st.error(f"Schemas: {sch_err}")
+                sch_opts = ["— select schema —"] + st.session_state[sch_cache_key]
+            else:
+                sch_opts = ["— select schema —"]
+            saved_sch = st.session_state.perm_cache.get("uc_srch_sch_val", "— select schema —")
+            sch_idx = sch_opts.index(saved_sch) if saved_sch in sch_opts else 0
+            sel_sch = st.selectbox("Schema", sch_opts, index=sch_idx, key="uc_srch_sch",
+                                   on_change=update_cache, args=("uc_srch_sch_val", "uc_srch_sch"),
+                                   disabled=(not sel_cat or sel_cat == "— select catalog —"))
+
+        # ── Keyword filter ────────────────────────────────────────────────────
+        with fc3:
+            saved_kw = st.session_state.perm_cache.get("uc_srch_kw_val", "")
+            uc_keyword = st.text_input("Table Keyword Filter", value=saved_kw, key="uc_srch_kw",
+                                       on_change=update_cache, args=("uc_srch_kw_val", "uc_srch_kw"),
+                                       placeholder="e.g. customer")
+
+        # ── Search button ─────────────────────────────────────────────────────
+        with fc4:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            do_search = st.button("Browse Tables", type="primary", key="uc_srch_btn",
+                                  disabled=(not sel_sch or sel_sch == "— select schema —"))
+
+        if do_search and sel_cat and sel_sch and sel_sch != "— select schema —":
+            with st.spinner("Loading tables…"):
+                tables, tbl_err = _db_conn.search_tables(sel_cat, sel_sch, uc_keyword)
+            if tbl_err:
+                st.error(f"Could not list tables: {tbl_err}")
+            else:
+                st.session_state.uc_search_results = tables
+
+        # ── Results table ─────────────────────────────────────────────────────
+        if st.session_state.get("uc_search_results"):
+            st.markdown("### Search Results")
+            res = st.session_state.uc_search_results
+            res_df = pd.DataFrame(res)
+            saved_uc = st.session_state.perm_cache.get("uc_selected_tables", [])
+            res_df["Select"] = res_df["full_name"].apply(lambda x: x in saved_uc)
+
+            edited_uc = st.data_editor(
+                res_df[["Select", "name", "catalog_name", "schema_name", "table_type", "full_name"]],
+                key="uc_results_editor",
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Select":       st.column_config.CheckboxColumn("Select"),
+                    "name":         st.column_config.TextColumn("Table Name"),
+                    "catalog_name": st.column_config.TextColumn("Catalog"),
+                    "schema_name":  st.column_config.TextColumn("Schema"),
+                    "table_type":   st.column_config.TextColumn("Type"),
+                    "full_name":    st.column_config.TextColumn("Full Name"),
+                },
+            )
+            uc_selected = edited_uc[edited_uc["Select"] == True]["full_name"].tolist()
+            st.session_state.perm_cache["uc_selected_tables"] = uc_selected
+
+            if st.button("Fetch Schemas", type="primary", key="uc_fetch_btn", disabled=not uc_selected):
+                st.session_state.tables_metadata = {}
+                with st.spinner("Fetching column schemas from Unity Catalog…"):
+                    for row in res:
+                        if row["full_name"] not in uc_selected:
+                            continue
+                        cols, col_err = _db_conn.get_table_columns(
+                            row["catalog_name"], row["schema_name"], row["name"]
+                        )
+                        if col_err:
+                            st.warning(f"{row['name']}: {col_err}")
+                            continue
+                        # Use full_name as the unique ID (mirrors Purview's entity GUID usage)
+                        st.session_state.tables_metadata[row["full_name"]] = {
+                            "name": row["name"],
+                            "qualifiedName": row["full_name"],
+                            "columns": cols,
+                            "column_guids": {c: c for c in cols},  # identity map — no Purview GUIDs
+                            "source": "databricks",
+                            "catalog": row["catalog_name"],
+                            "schema": row["schema_name"],
+                        }
+                if st.session_state.tables_metadata:
+                    st.success(f"Schemas fetched for {len(st.session_state.tables_metadata)} table(s).")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # DETECTED SCHEMAS  (shared by both sources)
+    # ══════════════════════════════════════════════════════════════════════════
     if st.session_state.get('tables_metadata'):
         st.markdown("---")
         st.markdown("### Detected Schemas")
         for tid, meta in st.session_state.tables_metadata.items():
-            with st.expander(f"Columns for: {meta['name']}", expanded=True):
-                for col in meta['columns']:
-                    st.markdown(f"- {col}")
-        
+            src_badge = "Databricks" if meta.get("source") == "databricks" else "Purview"
+            with st.expander(f"{src_badge}  {meta['name']}  —  {len(meta['columns'])} columns", expanded=True):
+                for cname in meta['columns']:
+                    st.markdown(f"`{cname}`")
+
         st.markdown("<br>", unsafe_allow_html=True)
-        # Check if any selected asset has history in Master Store
         selected_guids = list(st.session_state.tables_metadata.keys())
         has_history = PersistenceManager.has_stored_data(selected_guids)
-        
+
         c1, c2 = st.columns(2)
         with c1:
-            if st.button(" Generate AI Suggestions", use_container_width=True, type="secondary" if has_history else "primary"):
+            if st.button("Generate AI Suggestions", use_container_width=True, type="secondary" if has_history else "primary"):
                 st.session_state.selected_tab = "Glossary AI"
                 st.rerun()
         with c2:
-            if st.button(" Master Store", use_container_width=True, type="primary" if has_history else "secondary", disabled=not has_history):
+            if st.button("Master Store", use_container_width=True, type="primary" if has_history else "secondary", disabled=not has_history):
                 st.session_state.selected_tab = "Glossary Hub"
                 st.rerun()
-                
+
         if has_history:
             st.info("Note: These assets already have approved records in the Master Store.")
 
@@ -1429,17 +1581,12 @@ def render_master_glossary_tab():
     df_sum = pd.DataFrame(summaries)
     all_asset_names = df_sum["Asset Name"].tolist()
 
-    # ── Collect all metadata for filters ───────────────────────────────────────
-    all_types = sorted(set(
-        r.get("Type", "Column") 
-        for guid in df_sum["Asset GUID"].tolist() 
-        for r in (PersistenceManager.get_all_versions([guid]) or [])
-    ))
+    # ── Collect all metadata for filters (single batch read) ────────────────────
+    _all_guids = df_sum["Asset GUID"].tolist()
+    _all_records = PersistenceManager.get_all_versions(_all_guids) or []
+    all_types = sorted(set(r.get("Type", "Column") for r in _all_records))
     all_classifications = sorted(set(
-        r.get("Classification", "")
-        for guid in df_sum["Asset GUID"].tolist()
-        for r in (PersistenceManager.get_all_versions([guid]) or [])
-        if r.get("Classification", "")
+        r.get("Classification", "") for r in _all_records if r.get("Classification", "")
     ))
 
     # ── TWO COLUMN LAYOUT: left = filters, right = data ───────────────────────
@@ -1457,31 +1604,77 @@ def render_master_glossary_tab():
 
         collection_filter = "All"
 
-        # ── Data Source Type filter ────────────────────────────────────────────
-        with st.expander("Data Source Type", expanded=False):
-            data_source_options = ["All", "Azure SQL", "Snowflake", "Databricks", "Oracle", "Fabric"]
-            data_source_filter = st.radio(
-                "Select source", data_source_options,
-                key="hub_datasource_filter", label_visibility="collapsed"
-            )
+        # Detect Unity Catalog connection
+        _uc_cfg = st.session_state.get('integration_connectors', {}).get('Databricks Unity', {})
+        _uc_connected = _uc_cfg.get('status') == 'Connected'
 
-        # ── Collection filter ──────────────────────────────────────────────────
-        with st.expander("Collection", expanded=False):
-            coll_names = [c.get('friendlyName') or c.get('name') for c in st.session_state.get('purview_collections', [])]
-            if not coll_names:
-                coll_names = ["Default"]
-            # See more / See less toggle
-            show_all_colls = st.checkbox("**See more**", key="hub_coll_see_more", value=False)
-            if show_all_colls:
-                coll_filter_options = ["All"] + coll_names
-            else:
-                coll_filter_options = ["All"] + coll_names[:3]
-            asset_filter = st.radio(
-                "Select collection", coll_filter_options,
-                key="hub_asset_filter", label_visibility="collapsed"
-            )
-            if show_all_colls:
-                st.caption("Uncheck 'See more' to hide")
+        if _uc_connected:
+            # ── Load catalogs once into session state ──────────────────────────
+            _uc_conn = DatabricksUnityConnector(_uc_cfg.get('api_endpoint', ''), _uc_cfg.get('api_token', ''))
+            if 'hub_uc_catalogs' not in st.session_state:
+                _catalogs, _cat_err = _uc_conn.list_catalogs()
+                st.session_state.hub_uc_catalogs = _catalogs if not _cat_err else []
+            _catalogs = st.session_state.hub_uc_catalogs
+
+            # ── Catalog filter (Unity Catalog) ─────────────────────────────────
+            with st.expander("Catalog", expanded=False):
+                catalog_filter_options = ["All"] + _catalogs
+                hub_catalog_filter = st.radio(
+                    "Select catalog", catalog_filter_options,
+                    key="hub_catalog_filter", label_visibility="collapsed"
+                )
+
+            # ── Load schemas once per selected catalog into session state ───────
+            _sch_cache_key = f"hub_uc_schemas_{hub_catalog_filter}"
+            if _sch_cache_key not in st.session_state:
+                if hub_catalog_filter != "All":
+                    _schemas, _ = _uc_conn.list_schemas(hub_catalog_filter)
+                else:
+                    _schemas = []
+                    for _cat in _catalogs:
+                        _s, _ = _uc_conn.list_schemas(_cat)
+                        _schemas.extend(_s)
+                st.session_state[_sch_cache_key] = _schemas
+            _schemas = st.session_state[_sch_cache_key]
+
+            # ── Schema filter (Unity Catalog) ──────────────────────────────────
+            with st.expander("Schema", expanded=False):
+                schema_filter_options = ["All"] + _schemas
+                hub_schema_filter = st.radio(
+                    "Select schema", schema_filter_options,
+                    key="hub_schema_filter", label_visibility="collapsed"
+                )
+
+            data_source_filter = "All"
+            asset_filter = "All"
+        else:
+            hub_catalog_filter = "All"
+            hub_schema_filter = "All"
+
+            # ── Data Source Type filter ────────────────────────────────────────
+            with st.expander("Data Source Type", expanded=False):
+                data_source_options = ["All", "Azure SQL", "Snowflake", "Databricks", "Oracle", "Fabric"]
+                data_source_filter = st.radio(
+                    "Select source", data_source_options,
+                    key="hub_datasource_filter", label_visibility="collapsed"
+                )
+
+            # ── Collection filter ──────────────────────────────────────────────
+            with st.expander("Collection", expanded=False):
+                coll_names = [c.get('friendlyName') or c.get('name') for c in st.session_state.get('purview_collections', [])]
+                if not coll_names:
+                    coll_names = ["Default"]
+                show_all_colls = st.checkbox("**See more**", key="hub_coll_see_more", value=False)
+                if show_all_colls:
+                    coll_filter_options = ["All"] + coll_names
+                else:
+                    coll_filter_options = ["All"] + coll_names[:3]
+                asset_filter = st.radio(
+                    "Select collection", coll_filter_options,
+                    key="hub_asset_filter", label_visibility="collapsed"
+                )
+                if show_all_colls:
+                    st.caption("Uncheck 'See more' to hide")
 
         # ── Classification filter ──────────────────────────────────────────────
         with st.expander("Classification", expanded=False):
@@ -1499,7 +1692,7 @@ def render_master_glossary_tab():
             )
 
         # ── Table / Asset filter ──────────────────────────────────────────────
-        with st.expander("Table Filter", expanded=True):
+        with st.expander("Table Filter", expanded=False):
             if asset_filter != "All":
                 asset_to_view = asset_filter
                 st.markdown(
@@ -1611,27 +1804,32 @@ def render_master_glossary_tab():
 
                 st.markdown("<br>", unsafe_allow_html=True)
 
-                # ── Register / Push — show only the connected integration ────────
+                # ── Register / Push — only show button for connected integration ──
                 can_register = st.session_state.user_role == "Administrator"
                 active_df = df_hist[df_hist["Active"] == 1]
 
-                _connectors   = st.session_state.integration_connectors
-                _purview_cfg  = _connectors.get("Microsoft Purview", {})
-                _db_cfg       = _connectors.get("Databricks Unity", {})
-                _purview_on   = _purview_cfg.get("status") == "Connected"
-                _db_on        = _db_cfg.get("status") == "Connected"
-                _any_push     = _purview_on or _db_on
+                _connectors  = st.session_state.integration_connectors
+                _purview_cfg = _connectors.get("Microsoft Purview", {})
+                _db_cfg      = _connectors.get("Databricks Unity", {})
+                _purview_on  = _purview_cfg.get("status") == "Connected"
+                _db_on       = _db_cfg.get("status") == "Connected"
 
-                if not _any_push:
-                    st.info(
-                        "No integration is connected. "
-                        "Go to **Integrations & API** and connect **Microsoft Purview** or "
-                        "**Databricks Unity** to register terms back to the source."
-                    )
+                st.markdown("""
+                <style>
+                div[data-testid="stButton"] > button {
+                    background-color: #E53935 !important;
+                    color: #ffffff !important;
+                    border: none !important;
+                }
+                div[data-testid="stButton"] > button:hover {
+                    background-color: #C62828 !important;
+                    color: #ffffff !important;
+                }
+                </style>
+                """, unsafe_allow_html=True)
 
-                # ── Microsoft Purview panel ──────────────────────────────────────
+                # ── Microsoft Purview button (only if connected) ──────────────────
                 if _purview_on:
-                    st.markdown("#### Register to Microsoft Purview")
                     reg_label = f"Register {len(active_df)} Active Term(s) to Purview"
                     if st.button(reg_label, type="primary", use_container_width=True, disabled=not can_register):
                         creds = st.session_state.get("connector_creds", {})
@@ -1732,85 +1930,43 @@ def render_master_glossary_tab():
                                     else:
                                         st.success(f"✅ {registered} active term(s) from **{asset_to_view}** registered and assigned to Purview.")
 
-                # ── Databricks Unity Catalog panel ───────────────────────────────
+                # ── Databricks Unity Catalog button (only if connected) ────────────
                 if _db_on:
-                    st.markdown("#### Push to Databricks Unity Catalog")
-                    st.caption("Terms are stored as table-level tags: **Key** = Physical Term · **Value** = Business Term")
-
-                    _ws_url_browse = _db_cfg.get("api_endpoint", "")
-                    _pat_browse    = _db_cfg.get("api_token", "")
-                    _db_browse     = DatabricksUnityConnector(_ws_url_browse, _pat_browse)
-
-                    _cat_key = f"uc_cat_{selected_guid}"
-                    _sch_key = f"uc_sch_{selected_guid}"
-                    _tbl_key = f"uc_tbl_{selected_guid}"
-
-                    _cats, _cat_err = _db_browse.list_catalogs()
-                    if _cat_err:
-                        st.error(f"Could not list catalogs: {_cat_err}")
-                        _cats = []
-                    _sel_cat = st.selectbox("Catalog", options=["— select —"] + _cats, key=_cat_key)
-
-                    _sel_sch = None
-                    if _sel_cat and _sel_cat != "— select —":
-                        _schs, _sch_err = _db_browse.list_schemas(_sel_cat)
-                        if _sch_err:
-                            st.error(f"Could not list schemas: {_sch_err}")
-                            _schs = []
-                        _sel_sch = st.selectbox("Schema", options=["— select —"] + _schs, key=_sch_key)
-
-                    _sel_tbl = None
-                    if _sel_sch and _sel_sch != "— select —":
-                        _tbls, _tbl_err = _db_browse.list_tables(_sel_cat, _sel_sch)
-                        if _tbl_err:
-                            st.error(f"Could not list tables: {_tbl_err}")
-                            _tbls = []
-                        _sel_tbl = st.selectbox("Table", options=["— select —"] + _tbls, key=_tbl_key)
-
-                    _ready = bool(
-                        _sel_cat and _sel_cat != "— select —" and
-                        _sel_sch and _sel_sch != "— select —" and
-                        _sel_tbl and _sel_tbl != "— select —"
-                    )
-                    uc_full_name = f"{_sel_cat}.{_sel_sch}.{_sel_tbl}" if _ready else ""
-                    if uc_full_name:
-                        st.caption(f"Selected table: `{uc_full_name}`")
+                    _db_browse   = DatabricksUnityConnector(_db_cfg.get("api_endpoint", ""), _db_cfg.get("api_token", ""))
+                    _meta_entry  = st.session_state.get("tables_metadata", {}).get(selected_guid, {})
+                    uc_full_name = _meta_entry.get("qualifiedName", "")
 
                     _whs, _wh_err = _db_browse.list_sql_warehouses()
                     _wh_id = ""
-                    if _wh_err:
-                        st.caption(f"⚠ Could not list SQL warehouses: {_wh_err}")
-                    elif _whs:
-                        _wh_options = {f"{w['name']} ({w['state']})": w["id"] for w in _whs}
-                        _sel_wh_label = st.selectbox(
-                            "SQL Warehouse (fallback if REST tags endpoint is unavailable)",
-                            options=list(_wh_options.keys()),
-                            key=f"uc_wh_{selected_guid}",
-                        )
-                        _wh_id = _wh_options.get(_sel_wh_label, "")
+                    if not _wh_err and _whs:
+                        _running = [w for w in _whs if w["state"] == "RUNNING"]
+                        _wh_id = (_running or _whs)[0]["id"]
 
                     uc_label = f"Push {len(active_df)} Active Term(s) to Unity Catalog"
-                    if st.button(uc_label, type="primary", use_container_width=True, disabled=(not can_register or not _ready)):
-                        _tag_pairs = []
-                        for _, _row in active_df.iterrows():
-                            _phys = str(_row.get("Physical Term") or _row.get("Original Name", "")).strip()
-                            _biz  = str(_row.get("Business Term") or _row.get("Glossary Term", "")).strip()
-                            if _phys and _biz:
-                                _tag_pairs.append({"tag_name": _phys, "tag_value": _biz})
-                        if not _tag_pairs:
-                            st.warning("No column/business-term pairs found in the active records.")
+                    if st.button(uc_label, type="primary", use_container_width=True, disabled=(not can_register or not uc_full_name)):
+                        if not uc_full_name:
+                            st.warning("No table selected. Please select a table in **Asset Search** first.")
                         else:
-                            with st.spinner(f"Pushing {len(_tag_pairs)} tag(s) to Unity Catalog…"):
-                                _applied, _skipped, _errs = _db_browse.push_tags_to_table(uc_full_name, _tag_pairs, warehouse_id=_wh_id)
-                            if _errs:
-                                st.error("Push failed:\n" + "\n".join(f"• {e}" for e in _errs))
+                            _tag_pairs = []
+                            for _, _row in active_df.iterrows():
+                                _phys = str(_row.get("Physical Term") or _row.get("Original Name", "")).strip()
+                                _biz  = str(_row.get("Business Term") or _row.get("Glossary Term", "")).strip()
+                                if _phys and _biz:
+                                    _tag_pairs.append({"tag_name": _phys, "tag_value": _biz})
+                            if not _tag_pairs:
+                                st.warning("No column/business-term pairs found in the active records.")
                             else:
-                                if _applied:
-                                    st.success(f"✅ {_applied} tag(s) pushed to `{uc_full_name}` in Unity Catalog.")
-                                if _skipped:
-                                    st.info(f"⏭ {len(_skipped)} tag(s) already exist and were skipped: {', '.join(f'`{s}`' for s in _skipped)}")
-                                if not _applied and not _skipped:
-                                    st.warning("No tags were pushed.")
+                                with st.spinner(f"Pushing {len(_tag_pairs)} tag(s) to Unity Catalog…"):
+                                    _applied, _skipped, _errs = _db_browse.push_tags_to_table(uc_full_name, _tag_pairs, warehouse_id=_wh_id)
+                                if _errs:
+                                    st.error("Push failed:\n" + "\n".join(f"• {e}" for e in _errs))
+                                else:
+                                    if _applied:
+                                        st.success(f"✅ {_applied} tag(s) pushed to `{uc_full_name}` in Unity Catalog.")
+                                    if _skipped:
+                                        st.info(f"⏭ {len(_skipped)} tag(s) already exist and were skipped: {', '.join(f'`{s}`' for s in _skipped)}")
+                                    if not _applied and not _skipped:
+                                        st.warning("No tags were pushed.")
 
 def render_dashboard_tab():
 
@@ -1889,7 +2045,7 @@ def render_dashboard_tab():
                 phys = _html.escape(str(entry.get("physical_term", "")))
                 dr   = entry.get("decision_date", "")
                 try:
-                    dfmt = _dt_dash.fromisoformat(dr).strftime("%d %b, %H:%M") if dr else "—"
+                    dfmt = datetime.fromisoformat(dr).strftime("%d %b, %H:%M") if dr else "—"
                 except Exception:
                     dfmt = dr[:10] if dr else "—"
                 ib  = _icon_bg.get(sts, "#F4F3EF")
@@ -2080,11 +2236,11 @@ def render_dashboard_tab():
     coverage_score = min(100, int((gh_metrics["Active Terms"] / max(gh_metrics["Total Assets"] * 5, 1)) * 100))
     freshness_score = 0
     if gh_summaries:
-        _now = _dt_dash.now()
+        _now = datetime.now()
         _recent = sum(
             1 for s in gh_summaries
             if (lambda d: d is not None and (_now - d).days <= 7)(
-                (lambda v: _dt_dash.fromisoformat(str(v).replace("Z", "")) if v else None)(s.get("Last Updated"))
+                (lambda v: datetime.fromisoformat(str(v).replace("Z", "")) if v else None)(s.get("Last Updated"))
             )
         )
         freshness_score = min(100, int((_recent / len(gh_summaries)) * 100))

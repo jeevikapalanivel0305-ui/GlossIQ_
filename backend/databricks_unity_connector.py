@@ -397,3 +397,64 @@ class DatabricksUnityConnector:
         if ok:
             return len(sanitized_pairs), skipped_names, []
         return 0, skipped_names, [f"SQL fallback failed: {sql_err}"]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # GET TABLE COLUMNS
+    # ─────────────────────────────────────────────────────────────────────────
+    def get_table_columns(self, catalog: str, schema: str, table: str) -> tuple[list[str], str]:
+        """
+        Return the column names for a Unity Catalog table.
+
+        Uses GET /api/2.1/unity-catalog/tables/{catalog}.{schema}.{table}
+        which returns the full table metadata including column definitions.
+
+        Returns
+        -------
+        ([column_names], error_msg)  — error_msg is '' on success.
+        """
+        full_name = f"{catalog}.{schema}.{table}"
+        encoded = quote(full_name, safe="")
+        url = f"{self.workspace_url}/api/2.1/unity-catalog/tables/{encoded}"
+        try:
+            r = requests.get(url, headers=self._headers(), timeout=15)
+            if r.status_code == 200:
+                cols = [c["name"] for c in r.json().get("columns", []) if c.get("name")]
+                return cols, ""
+            elif r.status_code == 404:
+                return [], f"Table '{full_name}' not found in Unity Catalog."
+            elif r.status_code == 403:
+                return [], f"Access denied for '{full_name}'. Check USE CATALOG / USE SCHEMA privileges."
+            return [], f"HTTP {r.status_code}: {r.text[:200]}"
+        except Exception as e:
+            return [], str(e)
+
+    def search_tables(self, catalog: str, schema: str, keyword: str = "") -> tuple[list[dict], str]:
+        """
+        List tables in a catalog+schema, optionally filtered by keyword.
+
+        Returns
+        -------
+        ([{name, catalog_name, schema_name, full_name, table_type}, ...], error_msg)
+        """
+        url = f"{self.workspace_url}/api/2.1/unity-catalog/tables"
+        params: dict = {"catalog_name": catalog, "schema_name": schema}
+        try:
+            r = requests.get(url, headers=self._headers(), params=params, timeout=20)
+            if r.status_code == 200:
+                tables = r.json().get("tables", [])
+                results = []
+                for t in tables:
+                    name = t.get("name", "")
+                    if keyword and keyword.lower() not in name.lower():
+                        continue
+                    results.append({
+                        "name": name,
+                        "catalog_name": t.get("catalog_name", catalog),
+                        "schema_name": t.get("schema_name", schema),
+                        "full_name": t.get("full_name", f"{catalog}.{schema}.{name}"),
+                        "table_type": t.get("table_type", ""),
+                    })
+                return results, ""
+            return [], f"HTTP {r.status_code}: {r.text[:200]}"
+        except Exception as e:
+            return [], str(e)
