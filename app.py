@@ -483,8 +483,14 @@ def render_review_tab():
         else:
             st.warning(f"📧 Email not sent: {email_msg}")
 
+    # ── Unity Catalog scope: when connected, every sub-tab is restricted to UC terms ──
+    _uc_on     = st.session_state.get('integration_connectors', {}).get('Databricks Unity', {}).get('status') == 'Connected'
+    _uc_source = "Databricks Unity Catalog" if _uc_on else None
+    if _uc_on:
+        st.info("🔗 Unity Catalog connected — showing only Databricks Unity Catalog terms throughout this workflow.")
+
     # ── Queue stats bar ────────────────────────────────────────────────────────
-    stats = WorkflowManager.get_queue_stats()
+    stats = WorkflowManager.get_queue_stats(source_filter=_uc_source)
     s_cols = st.columns(5)
     STAT_META = [
         ("Pending",           "#F59E0B", "⏳"),
@@ -504,6 +510,11 @@ def render_review_tab():
         )
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Pre-load source-scoped audit log (used both by queue cards and Audit Log tab) ──
+    _tab1_audit = WorkflowManager.load_audit_log()
+    if _uc_on:
+        _tab1_audit = [e for e in _tab1_audit if e.get("source") == "Databricks Unity Catalog"]
 
     # ── Inner workflow tabs ────────────────────────────────────────────────────
     wf_tab1, wf_tab2, wf_tab3 = st.tabs(
@@ -527,9 +538,12 @@ def render_review_tab():
                 f_term = st.text_input("Business Term *", placeholder="e.g. Customer Lifetime Value")
                 f_def  = st.text_area("Definition *", placeholder="A precise business definition…", height=100)
             with f_col2:
+                _manual_sources = ["Manual", "AI Suggester", "Data Steward", "Business User", "Imported"]
+                if _uc_on:
+                    _manual_sources = ["Databricks Unity Catalog"] + _manual_sources
                 f_source = st.selectbox(
                     "Source",
-                    ["Manual", "AI Suggester", "Data Steward", "Business User", "Imported"],
+                    _manual_sources,
                 )
                 f_score = st.slider("Confidence Score", 0, 100, 80)
 
@@ -576,6 +590,9 @@ def render_review_tab():
                 st.rerun()
 
         queue = WorkflowManager.load_approval_queue()
+        # When UC is connected, restrict queue to UC-sourced terms only
+        if _uc_on:
+            queue = [e for e in queue if e.get("source") == "Databricks Unity Catalog"]
         # Default: show only undecided items
         undecided_statuses = ("Pending", "Conflict Detected")
         if not queue:
@@ -637,7 +654,8 @@ def render_review_tab():
                     suggested_date = suggested_raw[:10] if suggested_raw else "—"
 
                     # Check audit log: if term already approved there, treat as conflict
-                    _audit = WorkflowManager.load_audit_log()
+                    # _tab1_audit is pre-scoped to UC when UC is connected (closure variable)
+                    _audit = _tab1_audit
                     _ename = (entry.get("term_name") or "").strip().lower()
                     _ephys = (entry.get("physical_term") or entry.get("related_column") or "").strip().lower()
                     _etbl  = (entry.get("table_name") or "").strip().lower()
@@ -972,7 +990,7 @@ def render_review_tab():
     with wf_tab3:
         st.markdown("#### Audit Log — Decision History")
 
-        decided = WorkflowManager.load_audit_log()
+        decided = _tab1_audit  # Already source-scoped above
 
         if not decided:
             st.info("No decisions have been made yet.")
@@ -1541,9 +1559,14 @@ def render_glossary_tab():
             if selected_df.empty:
                 st.warning("Please select at least one term to send to the Approval Queue.")
             else:
-                # Clear previous AI-suggested entries so stores only have current selection
-                WorkflowManager.clear_ai_pending_from_queue()
-                WorkflowManager.clear_ai_suggested_terms()
+                # Clear previous batch of the same source before adding the new one
+                _any_uc_rows = any(
+                    st.session_state.tables_metadata.get(str(row.get("table_guid", "")), {}).get("source") == "databricks"
+                    for _, row in selected_df.iterrows()
+                )
+                _clear_src = "Databricks Unity Catalog" if _any_uc_rows else "AI Suggester"
+                WorkflowManager.clear_ai_pending_from_queue(source=_clear_src)
+                WorkflowManager.clear_ai_suggested_terms(source=_clear_src)
                 queued_count = 0
                 for _, row in selected_df.iterrows():
                     term_name     = row.get("Business Term") or row.get("Original Name") or ""
@@ -1552,10 +1575,13 @@ def render_glossary_tab():
                     term_type     = str(row.get("Type", "Column") or "Column")
                     physical_term = str(row.get("Physical Term") or row.get("related_column") or "")
                     if term_name:
+                        # Detect whether the term came from a Databricks Unity Catalog table
+                        _tbl_meta = st.session_state.tables_metadata.get(str(row.get("table_guid", "")), {})
+                        _src = "Databricks Unity Catalog" if _tbl_meta.get("source") == "databricks" else "AI Suggester"
                         WorkflowManager.create_suggested_term(
                             term_name        = term_name,
                             definition       = definition,
-                            source           = "AI Suggester",
+                            source           = _src,
                             confidence_score = score,
                             table_name       = str(row.get("table_name", "") or ""),
                             term_type        = term_type,
@@ -1584,6 +1610,19 @@ def render_master_glossary_tab():
     # ── Collect all metadata for filters (single batch read) ────────────────────
     _all_guids = df_sum["Asset GUID"].tolist()
     _all_records = PersistenceManager.get_all_versions(_all_guids) or []
+
+    # ── Unity Catalog scope: when Databricks Unity is connected, show only UC-approved records ──
+    _hub_uc_connected = st.session_state.get('integration_connectors', {}).get('Databricks Unity', {}).get('status') == 'Connected'
+    if _hub_uc_connected:
+        _all_records = [r for r in _all_records if r.get("Source") == "Databricks Unity Catalog"]
+        _uc_guids = {r.get("table_guid") for r in _all_records if r.get("table_guid")}
+        summaries = [s for s in summaries if s["Asset GUID"] in _uc_guids]
+        if not summaries:
+            st.info("No Unity Catalog approved records found. Generate AI suggestions from Databricks assets and approve them to see them here.")
+            return
+        df_sum = pd.DataFrame(summaries)
+        all_asset_names = df_sum["Asset Name"].tolist()
+
     all_types = sorted(set(r.get("Type", "Column") for r in _all_records))
     all_classifications = sorted(set(
         r.get("Classification", "") for r in _all_records if r.get("Classification", "")
@@ -1724,6 +1763,13 @@ def render_master_glossary_tab():
             
             if full_history:
                 df_hist = pd.DataFrame(full_history)
+
+                # When UC is connected, restrict to UC-sourced records only
+                if _hub_uc_connected and "Source" in df_hist.columns:
+                    df_hist = df_hist[df_hist["Source"] == "Databricks Unity Catalog"]
+                if df_hist.empty:
+                    st.info("No Unity Catalog approved records for this asset.")
+                    st.stop()
                 
                 # Apply filters
                 if record_status == "Active":
@@ -1976,6 +2022,12 @@ def render_dashboard_tab():
     suggestions = st.session_state.get('glossary_suggestions', [])
     audit_log   = WorkflowManager.load_audit_log()
     tables_meta = st.session_state.get('tables_metadata', {})
+
+    # ── Unity Catalog scope: when connected, restrict all metrics to UC-approved records ──
+    if st.session_state.get('integration_connectors', {}).get('Databricks Unity', {}).get('status') == 'Connected':
+        metrics   = PersistenceManager.get_dashboard_metrics(source_filter="Databricks Unity Catalog")
+        summaries = PersistenceManager.get_all_stored_summaries(source_filter="Databricks Unity Catalog")
+        audit_log = [e for e in (audit_log or []) if e.get("source") == "Databricks Unity Catalog"]
 
     maturity_fill = min(100, int((metrics["Active Terms"] / max(metrics["Total Assets"] * 5, 1)) * 100))
     pending_count = len([e for e in (audit_log or []) if e.get("status") not in ("Approved", "Approved (Merged)", "Rejected")])

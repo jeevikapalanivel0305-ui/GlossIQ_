@@ -47,22 +47,29 @@ class PersistenceManager:
         return all_data if found else None
 
     @classmethod
-    def get_all_stored_summaries(cls):
+    def get_all_stored_summaries(cls, source_filter=None):
         """
         Returns a list of summaries for all assets in the master store.
+        When source_filter is set (e.g. "Databricks Unity Catalog"), only assets
+        that have at least one record matching that Source are returned, and
+        Active Terms / Total History counts reflect only those filtered records.
         """
         store = cls._load_store()
         summaries = []
         
         for guid, records in store.items():
             if not records: continue
+
+            filtered = [r for r in records if r.get("Source") == source_filter] if source_filter else records
+            if not filtered:
+                continue
             
-            # Find the most recent update
-            sorted_records = sorted(records, key=lambda x: x.get("Stored At", ""), reverse=True)
+            # Find the most recent update within filtered records
+            sorted_records = sorted(filtered, key=lambda x: x.get("Stored At", ""), reverse=True)
             latest = sorted_records[0]
             
-            # Count active records
-            active_count = sum(1 for r in records if r.get("Active") == 1)
+            # Count active records within filtered set
+            active_count = sum(1 for r in filtered if r.get("Active") == 1)
             
             table_name = latest.get("table_name", latest.get("Original Name", "Unknown Asset"))
             
@@ -70,28 +77,34 @@ class PersistenceManager:
                 "Asset GUID": guid,
                 "Asset Name": table_name,
                 "Active Terms": active_count,
-                "Total History": len(records),
+                "Total History": len(filtered),
                 "Last Updated": latest.get("Stored At", "N/A"),
-                "Version": latest.get("Version", 1)  # Fixed: Added Version key
+                "Version": latest.get("Version", 1)
             })
             
         return summaries
 
     @classmethod
-    def get_dashboard_metrics(cls):
+    def get_dashboard_metrics(cls, source_filter=None):
         """
         Aggregates global metrics for the Executive Dashboard.
         Ensures active terms are unique per asset.
+        When source_filter is set (e.g. "Databricks Unity Catalog"), only records
+        matching that Source value are counted.
         """
         store = cls._load_store()
-        total_assets = len(store)
+        total_assets = 0
         total_active_terms = 0
         total_history_records = 0
         
         for records in store.values():
-            total_history_records += len(records)
+            filtered = [r for r in records if r.get("Source") == source_filter] if source_filter else records
+            if not filtered:
+                continue
+            total_assets += 1
+            total_history_records += len(filtered)
             active_ids = set()
-            for r in records:
+            for r in filtered:
                 if r.get("Active") == 1:
                     t_id = r.get("entity_guid") or r.get("Physical Term") or r.get("Original Name")
                     if t_id and t_id not in active_ids:

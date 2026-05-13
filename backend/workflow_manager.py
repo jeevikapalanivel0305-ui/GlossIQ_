@@ -287,9 +287,11 @@ class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
-    def check_conflict_with_hub(cls, term_name):
+    def check_conflict_with_hub(cls, term_name, source_filter=None):
         """
         Checks if term_name already exists in the Glossary Hub (master store).
+        When source_filter is set (e.g. "Databricks Unity Catalog"), only active
+        records matching that Source are checked — keeps UC and Purview glossaries isolated.
 
         Match logic:
           - Exact term_name match (case-insensitive)
@@ -305,6 +307,9 @@ class WorkflowManager:
         for asset_guid, records in master.items():
             for record in records:
                 if record.get("Active") != 1:
+                    continue
+                # Source isolation: when scoped, skip records from other sources
+                if source_filter and record.get("Source") != source_filter:
                     continue
                 for field in ["Business Term", "Physical Term", "Original Name",
                                "Glossary Term", "name"]:
@@ -351,6 +356,8 @@ class WorkflowManager:
     def run_conflict_check(cls, term_id):
         """
         Run a fresh conflict check for a specific term and update its queue entry.
+        When the term's source is "Databricks Unity Catalog", all checks are scoped
+        to UC-sourced records only — keeping UC and Purview glossaries isolated.
 
         Checks (in priority order):
           1. Glossary Hub (master store) — exact / fuzzy name match
@@ -373,12 +380,20 @@ class WorkflowManager:
         physical   = (entry.get("physical_term") or entry.get("related_column") or "").strip().lower()
         table      = (entry.get("table_name") or "").strip().lower()
 
+        # Determine source isolation scope
+        entry_source  = entry.get("source", "")
+        source_filter = entry_source if entry_source == "Databricks Unity Catalog" else None
+
         # ── Check 1: Glossary Hub (master store) ─────────────────────────────
-        conflict_found, existing_id, existing_name, match_type = cls.check_conflict_with_hub(term_name)
+        conflict_found, existing_id, existing_name, match_type = cls.check_conflict_with_hub(
+            term_name, source_filter=source_filter
+        )
 
         # ── Check 2: Audit log — same business term already Approved ─────────
         if not conflict_found:
             audit_log = cls.load_audit_log()
+            if source_filter:
+                audit_log = [e for e in audit_log if e.get("source") == source_filter]
             same_approved = next(
                 (
                     e for e in audit_log
@@ -399,6 +414,8 @@ class WorkflowManager:
         if not conflict_found and physical:
             if audit_log is None:
                 audit_log = cls.load_audit_log()
+                if source_filter:
+                    audit_log = [e for e in audit_log if e.get("source") == source_filter]
             diff_term = next(
                 (
                     e for e in audit_log
@@ -702,9 +719,10 @@ class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
-    def get_queue_stats(cls):
+    def get_queue_stats(cls, source_filter=None):
         """
         Return a dict of {status: count} for the KPI cards.
+        When source_filter is set, counts are restricted to entries matching that source.
 
         Source of truth:
           - "Pending" and "Conflict Detected" → approval queue
@@ -714,6 +732,10 @@ class WorkflowManager:
         """
         queue = cls.load_approval_queue()
         audit_log = cls.load_audit_log()
+
+        if source_filter:
+            queue     = [e for e in queue     if e.get("source") == source_filter]
+            audit_log = [e for e in audit_log if e.get("source") == source_filter]
 
         stats = {
             "Pending":           sum(1 for e in queue if e.get("status") == "Pending"),
@@ -725,27 +747,27 @@ class WorkflowManager:
         return stats
 
     @classmethod
-    def clear_ai_suggested_terms(cls):
+    def clear_ai_suggested_terms(cls, source="AI Suggester"):
         """
-        Remove all AI Suggester entries from ai_suggested_terms store.
+        Remove all entries matching `source` from ai_suggested_terms store.
         Called before sending a fresh AI recommendation batch so the store
         only contains the currently selected terms.
         Returns count of removed entries.
         """
         suggested = cls.load_suggested_terms()
         before    = len(suggested)
-        suggested = [s for s in suggested if s.get("source") != "AI Suggester"]
+        suggested = [s for s in suggested if s.get("source") != source]
         removed   = before - len(suggested)
         if removed:
             cls._save(SUGGESTED_TERMS_STORE, suggested)
         return removed
 
     @classmethod
-    def clear_ai_pending_from_queue(cls):
+    def clear_ai_pending_from_queue(cls, source="AI Suggester"):
         """
-        Remove all AI Suggester entries with status Pending or Conflict Detected
-        from the approval queue. Called before sending a fresh AI recommendation
-        batch so the queue only contains the currently selected terms.
+        Remove all entries matching `source` with status Pending or Conflict Detected
+        from the approval queue. Called before sending a fresh recommendation batch
+        so the queue only contains the currently selected terms.
         Returns count of removed entries.
         """
         queue  = cls.load_approval_queue()
@@ -753,7 +775,7 @@ class WorkflowManager:
         queue  = [
             e for e in queue
             if not (
-                e.get("source") == "AI Suggester"
+                e.get("source") == source
                 and e.get("status") in ("Pending", "Conflict Detected")
             )
         ]
