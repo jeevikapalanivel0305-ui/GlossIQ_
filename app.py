@@ -2025,8 +2025,25 @@ def render_dashboard_tab():
 
     # ── Unity Catalog scope: when connected, restrict all metrics to UC-approved records ──
     if st.session_state.get('integration_connectors', {}).get('Databricks Unity', {}).get('status') == 'Connected':
-        metrics   = PersistenceManager.get_dashboard_metrics(source_filter="Databricks Unity Catalog")
-        summaries = PersistenceManager.get_all_stored_summaries(source_filter="Databricks Unity Catalog")
+        # Filter inline — no kwarg dependency on persistence_manager
+        _all_recs_dash = PersistenceManager.get_all_versions(
+            [s["Asset GUID"] for s in summaries]
+        ) or []
+        _uc_recs_dash  = [r for r in _all_recs_dash if r.get("Source") == "Databricks Unity Catalog"]
+        _uc_guids_dash = {r.get("table_guid") for r in _uc_recs_dash if r.get("table_guid")}
+        summaries  = [s for s in summaries if s["Asset GUID"] in _uc_guids_dash]
+        # Recompute metrics from UC records only
+        _active_ids, _active_ct = set(), 0
+        for _r in _uc_recs_dash:
+            if _r.get("Active") == 1:
+                _tid = _r.get("entity_guid") or _r.get("Physical Term") or _r.get("Original Name")
+                if _tid and _tid not in _active_ids:
+                    _active_ids.add(_tid); _active_ct += 1
+        metrics = {
+            "Total Assets":  len(_uc_guids_dash),
+            "Active Terms":  _active_ct,
+            "Total History": len(_uc_recs_dash),
+        }
         audit_log = [e for e in (audit_log or []) if e.get("source") == "Databricks Unity Catalog"]
 
     maturity_fill = min(100, int((metrics["Active Terms"] / max(metrics["Total Assets"] * 5, 1)) * 100))
