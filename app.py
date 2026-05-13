@@ -988,7 +988,7 @@ def render_review_tab():
     with wf_tab3:
         st.markdown("#### Audit Log — Decision History")
 
-        decided = _tab1_audit  # Already source-scoped above
+        decided = WorkflowManager.load_audit_log()
 
         if not decided:
             st.info("No decisions have been made yet.")
@@ -1001,10 +1001,24 @@ def render_review_tab():
                 seen[key] = e
             unique = sorted(seen.values(), key=lambda x: x.get("decision_date", ""), reverse=True)
 
+            # ── Source filter ─────────────────────────────────────────────────
+            all_sources = sorted(set(e.get("source") or "Unknown" for e in unique))
+            src_filter_col, tbl_filter_col, _ = st.columns([1, 1, 2])
+            with src_filter_col:
+                # Default to UC if UC is connected in this session
+                _default_src = "Databricks Unity Catalog" if _uc_on and "Databricks Unity Catalog" in all_sources else "All Sources"
+                selected_source = st.selectbox(
+                    "Filter by Source",
+                    ["All Sources"] + all_sources,
+                    index=(["All Sources"] + all_sources).index(_default_src) if _default_src in ["All Sources"] + all_sources else 0,
+                    key="audit_source_filter",
+                )
+            if selected_source != "All Sources":
+                unique = [e for e in unique if (e.get("source") or "Unknown") == selected_source]
+
             # ── Table filter ──────────────────────────────────────────────────
             all_tables = sorted(set(e.get("table_name", "") or "—" for e in unique))
-            filter_col, _ = st.columns([1, 3])
-            with filter_col:
+            with tbl_filter_col:
                 selected_table = st.selectbox(
                     "Filter by Table",
                     ["All Tables"] + all_tables,
@@ -1587,6 +1601,8 @@ def render_glossary_tab():
                         )
                         queued_count += 1
                 if queued_count:
+                    st.session_state.glossary_df = None
+                    st.session_state.glossary_suggestions = []
                     st.session_state.selected_tab = "Review & Approval"
                     st.rerun()
                 else:
