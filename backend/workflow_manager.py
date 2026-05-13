@@ -817,3 +817,18 @@ class WorkflowManager:
         removed = len(queue) - len(active)
         cls._save(APPROVAL_QUEUE_STORE, active)
         return removed
+
+    @classmethod
+    def purge_pending_from_queue(cls):
+        """
+        Remove all Pending / Conflict Detected entries from the approval queue.
+        Called once per browser session so the queue starts empty and only fills
+        with terms sent during the current session.
+        Approved / Rejected entries in the audit log are untouched.
+        Returns count of removed entries.
+        """
+        queue   = cls.load_approval_queue()
+        decided = [e for e in queue if e.get("status") not in ("Pending", "Conflict Detected")]
+        removed = len(queue) - len(decided)
+        cls._save(APPROVAL_QUEUE_STORE, decided)
+        return removed

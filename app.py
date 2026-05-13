@@ -88,6 +88,13 @@ if 'user_name' not in st.session_state:
 if 'uc_search_results' not in st.session_state:
     st.session_state.uc_search_results = []
 
+# ── On every fresh browser session, wipe Pending/Conflict entries from the
+#    approval queue so the Review tab starts clean.  Approved/Rejected entries
+#    remain in the audit log and are untouched.
+if 'queue_cleared_this_session' not in st.session_state:
+    WorkflowManager.purge_pending_from_queue()
+    st.session_state.queue_cleared_this_session = True
+
 # Integration Connectors State – reinitialise if 'image' key is missing (migration guard)
 _CONNECTOR_DEFAULTS = {
     'Microsoft Purview': {'letter': 'MP',  'image': 'purview.jfif',    'desc': 'Data Governance Map','color_bg': '#EFF6FF', 'color_txt': '#1D4ED8', 'push': True,  'pull': True,  'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
@@ -1001,16 +1008,24 @@ def render_review_tab():
                 seen[key] = e
             unique = sorted(seen.values(), key=lambda x: x.get("decision_date", ""), reverse=True)
 
-            # ── Source filter ─────────────────────────────────────────────────
+            # ── Source filter — auto-select based on active connector ─────────
             all_sources = sorted(set(e.get("source") or "Unknown" for e in unique))
+            _connectors_state = st.session_state.get('integration_connectors', {})
+            _purview_on = _connectors_state.get('Microsoft Purview', {}).get('status') == 'Connected'
+            # Determine default: UC connected → UC; Purview connected → AI Suggester; else All
+            if _uc_on and "Databricks Unity Catalog" in all_sources:
+                _default_src = "Databricks Unity Catalog"
+            elif _purview_on and "AI Suggester" in all_sources:
+                _default_src = "AI Suggester"
+            else:
+                _default_src = "All Sources"
             src_filter_col, tbl_filter_col, _ = st.columns([1, 1, 2])
             with src_filter_col:
-                # Default to UC if UC is connected in this session
-                _default_src = "Databricks Unity Catalog" if _uc_on and "Databricks Unity Catalog" in all_sources else "All Sources"
+                _src_opts = ["All Sources"] + all_sources
                 selected_source = st.selectbox(
                     "Filter by Source",
-                    ["All Sources"] + all_sources,
-                    index=(["All Sources"] + all_sources).index(_default_src) if _default_src in ["All Sources"] + all_sources else 0,
+                    _src_opts,
+                    index=_src_opts.index(_default_src) if _default_src in _src_opts else 0,
                     key="audit_source_filter",
                 )
             if selected_source != "All Sources":
