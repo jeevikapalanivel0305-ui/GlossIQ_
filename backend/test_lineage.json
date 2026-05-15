@@ -1,29 +1,76 @@
 {
     "edges": [
         {
-            "id": "b1f6e3e6-effe-4227-83e1-fbe2515b68d0",
-            "source": "customer_id",
-            "target": "sales_table",
-            "type": "Direct",
-            "timestamp": "2026-04-13T13:25:54.517486"
+            "id": "e1-emr-registry",
+            "source": "EMR System",
+            "target": "Patient Registry DB",
+            "type": "Ingestion",
+            "timestamp": "2026-04-13T10:00:00.000000"
         },
         {
-            "id": "f599fe92-f8e2-42b5-9ce5-64f937177f6c",
-            "source": "sales_table",
-            "target": "dashboard",
-            "type": "Direct",
-            "timestamp": "2026-04-13T13:25:54.521176"
+            "id": "e2-registry-address",
+            "source": "Patient Registry DB",
+            "target": "patient_address",
+            "type": "ETL Transform",
+            "timestamp": "2026-04-13T10:05:00.000000"
+        },
+        {
+            "id": "e3-address-datalake",
+            "source": "patient_address",
+            "target": "Healthcare Data Lake",
+            "type": "Pipeline",
+            "timestamp": "2026-04-13T10:10:00.000000"
+        },
+        {
+            "id": "e4-datalake-purview",
+            "source": "Healthcare Data Lake",
+            "target": "Microsoft Purview Catalog",
+            "type": "Catalogued",
+            "timestamp": "2026-04-13T10:15:00.000000"
+        },
+        {
+            "id": "e5-datalake-bi",
+            "source": "Healthcare Data Lake",
+            "target": "BI Dashboard",
+            "type": "Reporting",
+            "timestamp": "2026-04-13T10:20:00.000000"
+        },
+        {
+            "id": "e6-purview-glossary",
+            "source": "Microsoft Purview Catalog",
+            "target": "Glossary Hub (GlossIQ)",
+            "type": "Term Sync",
+            "timestamp": "2026-04-13T10:25:00.000000"
         }
     ],
     "nodes": {
-        "customer_id": {
-            "classification": "PII"
+        "EMR System": {
+            "classification": "Source System",
+            "description": "Electronic Medical Records system — origin of all patient data"
         },
-        "sales_table": {
-            "classification": "PII"
+        "Patient Registry DB": {
+            "classification": "Operational DB",
+            "description": "Central relational database holding patient registration records"
         },
-        "dashboard": {
-            "classification": "PII"
+        "patient_address": {
+            "classification": "PII",
+            "description": "Curated table with patient demographic & address information"
+        },
+        "Healthcare Data Lake": {
+            "classification": "Confidential",
+            "description": "Azure Data Lake storing curated healthcare datasets"
+        },
+        "Microsoft Purview Catalog": {
+            "classification": "Governance",
+            "description": "Enterprise data catalog and governance platform"
+        },
+        "BI Dashboard": {
+            "classification": "Analytics",
+            "description": "Power BI reports consumed by clinical operations teams"
+        },
+        "Glossary Hub (GlossIQ)": {
+            "classification": "Governance",
+            "description": "Business glossary managed by this application"
         }
     }
 }

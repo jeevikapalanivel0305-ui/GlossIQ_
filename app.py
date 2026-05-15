@@ -1012,11 +1012,9 @@ def render_review_tab():
             all_sources = sorted(set(e.get("source") or "Unknown" for e in unique))
             _connectors_state = st.session_state.get('integration_connectors', {})
             _purview_on = _connectors_state.get('Microsoft Purview', {}).get('status') == 'Connected'
-            # Determine default: UC connected → UC; Purview connected → AI Suggester; else All
+            # Determine default: UC connected → UC; Purview only → All Sources (Purview governs all); else All
             if _uc_on and "Databricks Unity Catalog" in all_sources:
                 _default_src = "Databricks Unity Catalog"
-            elif _purview_on and "AI Suggester" in all_sources:
-                _default_src = "AI Suggester"
             else:
                 _default_src = "All Sources"
             src_filter_col, tbl_filter_col, _ = st.columns([1, 1, 2])
@@ -1080,57 +1078,258 @@ def render_review_tab():
                     },
                 )
 
+def _infer_domain(table_name: str, source: str) -> str:
+    """Infer a business domain from table name and source system."""
+    tl = table_name.lower()
+    if any(x in tl for x in ['patient', 'clinical', 'medical', 'diagnosis', 'treatment', 'health']):
+        return 'Healthcare'
+    if any(x in tl for x in ['sales', 'revenue', 'invoice', 'payment', 'finance', 'ledger']):
+        return 'Finance'
+    if any(x in tl for x in ['customer', 'client', 'crm', 'account', 'contact']):
+        return 'CRM'
+    if any(x in tl for x in ['product', 'inventory', 'item', 'sku', 'catalog']):
+        return 'Product'
+    if any(x in tl for x in ['employee', 'hr', 'staff', 'payroll', 'workforce']):
+        return 'HR'
+    if 'purview' in source.lower():
+        return 'Governance'
+    if 'databricks' in source.lower():
+        return 'Data Engineering'
+    return 'Enterprise'
+
+
+def _safe_mermaid_id(s: str) -> str:
+    import re
+    return re.sub(r'[^a-zA-Z0-9_]', '_', s)
+
+
+def _mermaid_label(s: str) -> str:
+    return s.replace('"', "'").replace('\n', ' ')
+
+
+def _render_mermaid(mermaid_code: str, height: int = 480) -> None:
+    """Render a Mermaid diagram inside an iframe-safe HTML block."""
+    st.components.v1.html(
+        f"""<!DOCTYPE html>
+<html>
+<head>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({{
+    startOnLoad: true,
+    theme: 'default',
+    flowchart: {{ curve: 'basis', useMaxWidth: true, padding: 24 }}
+  }});
+</script>
+<style>body{{margin:0;padding:12px;background:#fff;font-family:Inter,sans-serif;}}</style>
+</head>
+<body>
+<div class="mermaid">
+{mermaid_code}
+</div>
+</body>
+</html>""",
+        height=height,
+        scrolling=True,
+    )
+
+
 def render_lineage_tab():
     render_dashboard_header("Lineage Map")
-    st.markdown('<div class="workbench-header"><div class="accent-line"></div><h1 class="workbench-title">Lineage & Relationship Map</h1><p class="workbench-desc">Interactive graph showing how terms relate, parent/child hierarchies, and cross-domain links.</p></div>', unsafe_allow_html=True)
-    
-    st.markdown("""
-    ### Business Term Lineage
-    """)
-    selected_term = st.selectbox("Select a central term to explore", ["Customer Lifetime Value", "Gross Revenue", "Active Users"])
-    
-    mermaid_code = ""
-    if selected_term == "Customer Lifetime Value":
-        mermaid_code = """
-        graph LR
-            A[Customer Profile Table] -->|Provides| B((Customer Lifetime Value))
-            C[Online Sales DB] -->|Feeds| A
-            B -.->|Related to| D((Churn Rate))
-            B -.->|Synonym| E((LTV))
-            F[Marketing Domain] -->|Owns| B
-        """
-    elif selected_term == "Gross Revenue":
-        mermaid_code = """
-        graph LR
-            A[Sales Transactions DB] -->|Provides| B((Gross Revenue))
-            B -->|Parent of| C((Net Revenue))
-            B -->|Parent of| D((Operating Margin))
-            E[Finance Domain] -->|Owns| B
-            B -.->|Related to| F((Total Sales))
-        """
-    else:
-        mermaid_code = """
-        graph LR
-            A[App Telemetry DB] -->|Provides| B((Active Users))
-            B -->|Parent of| C((DAU - Daily Active Users))
-            B -->|Parent of| D((MAU - Monthly Active Users))
-            E[Product Domain] -->|Owns| B
-        """
-        
-    st.components.v1.html(
-        f"""
-        <div style="background-color: white; padding: 20px; border-radius: 8px; border: 1px solid #E5E7EB;">
-            <script type="module">
-                import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-                mermaid.initialize({{ startOnLoad: true, theme: 'default' }});
-            </script>
-            <div class="mermaid">
-                {mermaid_code}
-            </div>
-        </div>
-        """,
-        height=400,
+    st.markdown(
+        '<div class="workbench-header"><div class="accent-line"></div>'
+        '<h1 class="workbench-title">Business Term Lineage</h1>'
+        '<p class="workbench-desc">End-to-end lineage: '
+        '<strong>Source</strong> → <strong>Asset (Table)</strong> → <strong>Attribute (Column)</strong> → <strong>Business Term</strong>, '
+        'with Domain ownership and confidence score. Only terms from connected sources are shown.</p>'
+        '</div>',
+        unsafe_allow_html=True,
     )
+
+    # ── Source-to-connector mapping ──────────────────────────────────────────
+    # Maps a glossary "Source" value → integration_connectors key
+    # Only terms whose source maps to a Connected integration are shown.
+    _SRC_CONNECTOR_MAP = {
+        "Databricks Unity Catalog": "Databricks Unity",
+        "Microsoft Purview":        "Microsoft Purview",
+    }
+
+    _connectors = st.session_state.get("integration_connectors", {})
+
+    def _source_is_available(src: str) -> bool:
+        # AI Suggester / Manual / etc. are internal — never shown in lineage.
+        # Only sources that exist in _SRC_CONNECTOR_MAP are real integrations.
+        if src not in _SRC_CONNECTOR_MAP:
+            return False
+        connector_key = _SRC_CONNECTOR_MAP[src]
+        # Direct match: the source's own connector is connected
+        if _connectors.get(connector_key, {}).get("status") == "Connected":
+            return True
+        # Purview as governance layer: when Purview is connected it catalogs
+        # Databricks Unity Catalog assets, so surface those terms too.
+        if src == "Databricks Unity Catalog":
+            return _connectors.get("Microsoft Purview", {}).get("status") == "Connected"
+        return False
+
+    # ── Load glossary_master ─────────────────────────────────────────────────
+    glossary_path = os.path.join(os.path.dirname(__file__), 'backend', 'glossary_master.json')
+    try:
+        with open(glossary_path, encoding='utf-8') as _f:
+            glossary_data = json.load(_f)
+    except Exception:
+        glossary_data = {}
+
+    # ── Flatten ALL active terms (used for total count) ──────────────────────
+    all_terms_full: dict = {}
+    for entries in glossary_data.values():
+        for entry in entries:
+            if entry.get("Active", 0) == 1:
+                bt = entry["Business Term"]
+                if bt not in all_terms_full:
+                    all_terms_full[bt] = []
+                all_terms_full[bt].append(entry)
+
+    # ── Filter to CONNECTED-source terms only ────────────────────────────────
+    # Strict: only terms whose source maps to a currently-connected integration.
+    # Purview connected → all glossary terms (Purview governs the whole hub).
+    # Databricks connected → only Databricks-sourced terms.
+    # Neither → nothing shown.
+    all_terms: dict = {}
+    for bt, ents in all_terms_full.items():
+        filtered = [e for e in ents if _source_is_available(e.get("Source", ""))]
+        if filtered:
+            all_terms[bt] = filtered
+
+    purview_connected = _connectors.get("Microsoft Purview", {}).get("status") == "Connected"
+
+    if not all_terms:
+        st.warning(
+            "No terms available from connected sources. "
+            "Connect **Microsoft Purview** or **Databricks Unity** in **Integrations & API**."
+        )
+        if st.button("Go to Integrations & API", key="lin_goto_int"):
+            st.session_state.selected_tab = "Integrations & API"
+            st.rerun()
+        return
+
+    # ── Term selector ────────────────────────────────────────────────────────
+    term_list = sorted(all_terms.keys())
+    selected_term = st.selectbox(
+        "Select a Business Term to explore its lineage",
+        term_list,
+        key="lineage_term_selector",
+    )
+
+    entries = all_terms[selected_term]
+
+    # ── Build Mermaid lineage diagram ────────────────────────────────────────
+    # Layout: [Integration Source] --> [Table] --> [Column] --> ((Business Term))
+    #                                              [Domain] -.-> ((Business Term))
+    lines = ['flowchart LR']
+    lines.append('    classDef source  fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A,font-weight:700,rx:6')
+    lines.append('    classDef tbl     fill:#D1FAE5,stroke:#059669,color:#064E3B,font-weight:600')
+    lines.append('    classDef col     fill:#FEF3C7,stroke:#D97706,color:#78350F,font-weight:600')
+    lines.append('    classDef term    fill:#CC0000,stroke:#7F1D1D,color:#FFFFFF,font-weight:700,font-size:15px')
+    lines.append('    classDef domain  fill:#F3E8FF,stroke:#7C3AED,color:#4C1D95,font-weight:600')
+    lines.append('    classDef purview fill:#EFF6FF,stroke:#1D4ED8,color:#1E3A8A,font-weight:600')
+    lines.append('    classDef sl_node fill:#F9FAFB,stroke:#D1D5DB,color:#6B7280,font-size:12px')
+    lines.append('')
+
+    # Central term node (right-most)
+    term_node_id = 'BTERM'
+    lines.append(f'    {term_node_id}(("{_mermaid_label(selected_term)}"))')
+    lines.append(f'    class {term_node_id} term')
+    lines.append('')
+
+    seen_src, seen_tbl, seen_col, seen_dom = {}, {}, {}, {}
+
+    databricks_connected = _connectors.get("Databricks Unity", {}).get("status") == "Connected"
+
+    for entry in entries:
+        raw_src = entry.get("Source", "Unknown")
+        tbl     = entry.get("table_name", "unknown")
+        phys    = entry.get("Physical Term", "")
+        etype   = entry.get("Type", "Column")
+        dom     = _infer_domain(tbl, raw_src)
+        conf    = entry.get("Confidence (%)", 0)
+
+        # Display source: always show the CONNECTED integration, not the internal generation source.
+        # Purview only connected  → show all terms as "Microsoft Purview"
+        # Databricks only         → show as "Databricks Unity Catalog"
+        # Both connected          → keep original source label
+        if purview_connected and not databricks_connected:
+            src = "Microsoft Purview"
+        elif databricks_connected and not purview_connected:
+            src = "Databricks Unity Catalog"
+        else:
+            src = raw_src  # both connected — preserve original
+
+        src_id = _safe_mermaid_id(f"SRC_{src}")
+        tbl_id = _safe_mermaid_id(f"TBL_{tbl}")
+        col_id = _safe_mermaid_id(f"COL_{tbl}_{phys}")
+        dom_id = _safe_mermaid_id(f"DOM_{dom}")
+
+        # Source node
+        if src_id not in seen_src:
+            seen_src[src_id] = src
+            if "databricks" in src.lower():
+                icon, cls = "🔷", "source"
+            else:  # Microsoft Purview or any mapped integration
+                icon, cls = "🔵", "purview"
+            lines.append(f'    {src_id}["{icon} {_mermaid_label(src)}"]')
+            lines.append(f'    class {src_id} {cls}')
+
+        # Table node  (labelled as "asset")
+        if tbl_id not in seen_tbl:
+            seen_tbl[tbl_id] = tbl
+            lines.append(f'    {tbl_id}[("📋 {_mermaid_label(tbl)}")]')
+            lines.append(f'    class {tbl_id} tbl')
+
+        # Source ──source──► Table(asset)
+        lines.append(f'    {src_id} -->|"source"| {tbl_id}')
+
+        # Column node (attribute) → Business Term
+        if etype == "Column" and phys:
+            if col_id not in seen_col:
+                seen_col[col_id] = phys
+                lines.append(f'    {col_id}["⚙ {_mermaid_label(phys)}\nattribute"]')
+                lines.append(f'    class {col_id} col')
+            # Table ──asset──► Column(physical term)
+            lines.append(f'    {tbl_id} -->|"asset"| {col_id}')
+            # Column ──maps to · score──► Business Term
+            lines.append(f'    {col_id} -->|"maps to · {conf}%"| {term_node_id}')
+        else:
+            # Table(asset) ──maps to · score──► Business Term (table-level term)
+            lines.append(f'    {tbl_id} -->|"maps to · {conf}%"| {term_node_id}')
+
+        # Domain node (dashed arrow into term)
+        if dom_id not in seen_dom:
+            seen_dom[dom_id] = dom
+            lines.append(f'    {dom_id}[/"🏷 {_mermaid_label(dom)} Domain · {conf}% score"/]')
+            lines.append(f'    class {dom_id} domain')
+        lines.append(f'    {dom_id} -.->|"owns"| {term_node_id}')
+
+    # Purview is already the primary source node — no separate catalogued node needed
+    # (only add if Purview NOT connected, to show governance relationship)
+    if not purview_connected:
+        lines.append('')
+        lines.append('    PV_CAT["📘 Microsoft Purview"]')
+        lines.append('    class PV_CAT purview')
+        lines.append(f'    PV_CAT -.->|"catalogued"| {term_node_id}')
+
+    mermaid_lineage = '\n'.join(lines)
+
+    # ── Render: Business Term Lineage diagram ────────────────────────────────
+    st.markdown("##### Lineage Graph")
+    _render_mermaid(mermaid_lineage, height=480)
+
+    # ── Definition ───────────────────────────────────────────────────────────
+    st.markdown("**Definition:**")
+    for entry in reversed(entries):
+        defn = entry.get("Definition / Description", "")
+        if defn:
+            st.info(defn)
+            break
 
 def render_search_tab():
     render_dashboard_header("Asset Search")
