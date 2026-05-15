@@ -1309,14 +1309,6 @@ def render_lineage_tab():
             lines.append(f'    class {dom_id} domain')
         lines.append(f'    {dom_id} -.->|"owns"| {term_node_id}')
 
-    # Purview is already the primary source node — no separate catalogued node needed
-    # (only add if Purview NOT connected, to show governance relationship)
-    if not purview_connected:
-        lines.append('')
-        lines.append('    PV_CAT["📘 Microsoft Purview"]')
-        lines.append('    class PV_CAT purview')
-        lines.append(f'    PV_CAT -.->|"catalogued"| {term_node_id}')
-
     mermaid_lineage = '\n'.join(lines)
 
     # ── Render: Business Term Lineage diagram ────────────────────────────────
