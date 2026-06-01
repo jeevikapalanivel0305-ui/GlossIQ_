@@ -71,6 +71,8 @@ if 'selected_tab' not in st.session_state:
     st.session_state.selected_tab = "Executive Dashboard"
 if 'glossary_df' not in st.session_state:
     st.session_state.glossary_df = None
+if 'glossary_df_version' not in st.session_state:
+    st.session_state.glossary_df_version = 0
 if 'active_connector' not in st.session_state:
     st.session_state.active_connector = None
 if 'connector_statuses' not in st.session_state:
@@ -94,6 +96,10 @@ if 'uc_search_results' not in st.session_state:
 if 'queue_cleared_this_session' not in st.session_state:
     WorkflowManager.purge_pending_from_queue()
     st.session_state.queue_cleared_this_session = True
+    st.session_state.session_start_time = datetime.now().isoformat()
+# Ensure session_start_time always exists (handles sessions started before this code)
+if 'session_start_time' not in st.session_state:
+    st.session_state.session_start_time = datetime.now().isoformat()
 
 # Integration Connectors State – reinitialise if 'image' key is missing (migration guard)
 _CONNECTOR_DEFAULTS = {
@@ -495,7 +501,8 @@ def render_review_tab():
     _uc_source = "Databricks Unity Catalog" if _uc_on else None
 
     # ── Queue stats bar ────────────────────────────────────────────────────────
-    stats = WorkflowManager.get_queue_stats(source_filter=_uc_source)
+    _session_start = st.session_state.get('session_start_time', '')
+    stats = WorkflowManager.get_queue_stats(source_filter=_uc_source, session_start=_session_start)
     s_cols = st.columns(5)
     STAT_META = [
         ("Pending",           "#F59E0B", "⏳"),
@@ -653,7 +660,8 @@ def render_review_tab():
                     ai_type     = "user" if ai_src == "User" else "ai"
                     _pt = (entry.get("physical_term") or entry.get("related_column") or
                            (entry.get("table_name") if (entry.get("term_type") or "").lower() == "table" else ""))
-                    source_disp = _html.escape(_pt or ai_src or "")
+                    phys_disp = _html.escape(_pt or "")
+                    table_disp = _html.escape(entry.get("table_name", "") or "")
                     has_conflict = bool(entry.get("conflict_found"))
                     suggested_raw  = entry.get("created_at") or entry.get("suggested_at") or ""
                     suggested_date = suggested_raw[:10] if suggested_raw else "—"
@@ -664,28 +672,44 @@ def render_review_tab():
                     _ename = (entry.get("term_name") or "").strip().lower()
                     _ephys = (entry.get("physical_term") or entry.get("related_column") or "").strip().lower()
                     _etbl  = (entry.get("table_name") or "").strip().lower()
+                    _entry_source = entry.get("source", "")
 
-                    # Case 1: exact same business term already approved → must Merge
-                    audit_conflict = any(
-                        (e.get("term_name") or "").strip().lower() == _ename
-                        and e.get("status") == "Approved"
-                        for e in _audit
-                    )
+                    # Case 1: same connector + same table + same column + SAME business term → Merge only
+                    audit_conflict = False
+                    _same_col_same_term = None
+                    if _ephys and _etbl:
+                        _same_col_same_term = next(
+                            (
+                                e for e in _audit
+                                if e.get("status") in ("Approved", "Approved (Merged)")
+                                and (e.get("physical_term") or "").strip().lower() == _ephys
+                                and (e.get("table_name") or "").strip().lower() == _etbl
+                                and (e.get("source") or "") == _entry_source
+                                and (e.get("term_name") or "").strip().lower() == _ename
+                            ),
+                            None,
+                        )
+                    if _same_col_same_term:
+                        audit_conflict = True
 
-                    # Case 2: same physical_term + table but DIFFERENT business term already approved
-                    # → warn but still allow Approve / Reject
-                    _prior_diff = next(
-                        (
-                            e for e in _audit
-                            if e.get("status") == "Approved"
-                            and _ephys
-                            and (e.get("physical_term") or "").strip().lower() == _ephys
-                            and (e.get("table_name") or "").strip().lower() == _etbl
-                            and (e.get("term_name") or "").strip().lower() != _ename
-                        ),
-                        None,
-                    )
-                    audit_diff_term = _prior_diff is not None
+                    # Case 2: same connector + same table + same column + DIFFERENT business term → all options
+                    _prior_diff = None
+                    audit_diff_term = False
+                    if not audit_conflict and _ephys and _etbl:
+                        _prior_diff = next(
+                            (
+                                e for e in _audit
+                                if e.get("status") in ("Approved", "Approved (Merged)")
+                                and (e.get("physical_term") or "").strip().lower() == _ephys
+                                and (e.get("table_name") or "").strip().lower() == _etbl
+                                and (e.get("source") or "") == _entry_source
+                                and (e.get("term_name") or "").strip().lower() != _ename
+                            ),
+                            None,
+                        )
+                        audit_diff_term = _prior_diff is not None
+
+                    audit_same_tbl_diff_col = False  # Not used as conflict anymore
 
                     if audit_conflict:
                         has_conflict = True
@@ -740,8 +764,12 @@ def render_review_tab():
                               '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
                                 f'<span style="font-size:11px;color:#888780;">'
                                   '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#378ADD;margin-right:4px;vertical-align:middle;"></span>'
-                                  f'Source: <strong>{source_disp}</strong>'
+                                  f'Physical Term: <strong>{phys_disp}</strong>'
                                 '</span>'
+                                + (f'<span style="font-size:11px;color:#888780;">'
+                                  '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#10B981;margin-right:4px;vertical-align:middle;"></span>'
+                                  f'Table: <strong>{table_disp}</strong>'
+                                '</span>' if table_disp else '') +
                                 f'{conflict_tag}'
                               '</div>'
                             '</div>'
@@ -766,10 +794,13 @@ def render_review_tab():
 
                         if status in ("Pending", "Conflict Detected"):
                             if audit_conflict:
-                                # Same business term already approved: ✓ disabled, ✕ hidden, 🔀 Merge visible
+                                # Same connector+table+column+term: ✓ disabled, ✕ hidden, 🔀 Merge visible
                                 _, _, ba, bm, bmore = st.columns([2, 2, 1, 1, 1])
+                            elif audit_diff_term:
+                                # Same connector+table+column but diff term: all three buttons visible
+                                _, _, ba, br, bm, bmerge = st.columns([1.5, 1.5, 1, 1, 1, 1])
                             else:
-                                # Normal OR audit_diff_term: all three buttons shown, approve/reject enabled
+                                # Normal: approve/reject + popover with merge
                                 _, _, ba, br, bm = st.columns([2, 2, 1, 1, 1])
 
                             if audit_diff_term and not audit_conflict:
@@ -812,6 +843,40 @@ def render_review_tab():
                                             label_visibility="collapsed",
                                         )
                                         st.warning("⚠️ This term was already approved. Approve (✓) and Reject (✕) are disabled. Use 🔀 Merge to create a new version.")
+                            elif audit_diff_term:
+                                # All three buttons visible: Approve, Reject, Merge
+                                with br:
+                                    if st.button("✕", key=f"reject_{term_id}",
+                                                 use_container_width=True):
+                                        ok, msg, pa_results = WorkflowManager.reject_term(
+                                            term_id,
+                                            approver_comment=st.session_state.get(f"comment_{term_id}", ""),
+                                            webhooks=webhooks,
+                                        )
+                                        if ok:
+                                            st.session_state["_email_notification"] = (True, "Term rejected.")
+                                        else:
+                                            st.error(msg)
+                                        st.rerun()
+                                with bm:
+                                    if st.button("🔀", key=f"merge_{term_id}",
+                                                 use_container_width=True,
+                                                 help="Merge with existing approved term"):
+                                        ok, msg = WorkflowManager.approve_with_merge(
+                                            term_id,
+                                            approver_comment=st.session_state.get(f"comment_{term_id}", ""),
+                                            webhooks=webhooks,
+                                        )
+                                        st.success(msg) if ok else st.error(msg)
+                                        st.rerun()
+                                with bmerge:
+                                    with st.popover("···", use_container_width=True):
+                                        st.text_input(
+                                            "Comment",
+                                            placeholder="Approver comment…",
+                                            key=f"comment_{term_id}",
+                                            label_visibility="collapsed",
+                                        )
                             else:
                                 with br:
                                     if st.button("✕", key=f"reject_{term_id}",
@@ -997,23 +1062,39 @@ def render_review_tab():
 
         decided = WorkflowManager.load_audit_log()
 
+        # Filter audit log to show only entries from the currently connected connector
+        _connectors_state = st.session_state.get('integration_connectors', {})
+        _connected_sources = []
+        _connector_source_map = {
+            'Databricks Unity': 'Databricks Unity Catalog',
+            'Microsoft Purview': 'Microsoft Purview',
+            'Collibra': 'Collibra',
+            'Atlan': 'Atlan',
+            'dbt Cloud': 'dbt Cloud',
+            'Alation': 'Alation',
+        }
+        for connector_name, source_name in _connector_source_map.items():
+            if _connectors_state.get(connector_name, {}).get('status') == 'Connected':
+                _connected_sources.append(source_name)
+
+        # If any connector is connected, also include AI Suggester entries
+        # (AI suggestions are generated from connected connector data)
+        if _connected_sources and decided:
+            _allowed_sources = set(_connected_sources + ["AI Suggester", "Manual", "Data Steward", "Business User", "Imported"])
+            decided = [e for e in decided if e.get("source") in _allowed_sources]
+
         if not decided:
             st.info("No decisions have been made yet.")
         else:
-            # Deduplicate by (term_name, status) — keeps latest decision per term+status,
-            # even if term was re-submitted with a different term_id
-            seen = {}
-            for e in sorted(decided, key=lambda x: x.get("decision_date", "")):
-                key = ((e.get("term_name") or "").strip().lower(), e.get("status"))
-                seen[key] = e
-            unique = sorted(seen.values(), key=lambda x: x.get("decision_date", ""), reverse=True)
+            # Show all history — sorted by decision date (newest first)
+            unique = sorted(decided, key=lambda x: x.get("decision_date", ""), reverse=True)
 
             # ── Source filter — auto-select based on active connector ─────────
             all_sources = sorted(set(e.get("source") or "Unknown" for e in unique))
-            _connectors_state = st.session_state.get('integration_connectors', {})
-            _purview_on = _connectors_state.get('Microsoft Purview', {}).get('status') == 'Connected'
-            # Determine default: UC connected → UC; Purview only → All Sources (Purview governs all); else All
-            if _uc_on and "Databricks Unity Catalog" in all_sources:
+            # Default to the connected connector source if only one is connected
+            if len(_connected_sources) == 1 and _connected_sources[0] in all_sources:
+                _default_src = _connected_sources[0]
+            elif _uc_on and "Databricks Unity Catalog" in all_sources:
                 _default_src = "Databricks Unity Catalog"
             else:
                 _default_src = "All Sources"
@@ -1591,7 +1672,10 @@ def render_glossary_tab():
     render_dashboard_header("Glossary AI")
     st.markdown('<div class="workbench-header"><div class="accent-line"></div><h1 class="workbench-title">Glossary AI</h1><p class="workbench-desc">AI-powered generation of formal Business terms and definitions</p></div>', unsafe_allow_html=True)
     
-    if not st.session_state.get('tables_metadata'):
+    _has_metadata = bool(st.session_state.get('tables_metadata'))
+    _has_generated = st.session_state.get('glossary_df') is not None
+
+    if not _has_metadata and not _has_generated:
         st.warning("Please search for assets in 'Asset Search' first.")
         return
 
@@ -1604,90 +1688,92 @@ def render_glossary_tab():
                 "Original Name": "Physical Term"
             })
 
-    col_ctx, col_opt = st.columns([2, 1])
-    with col_ctx:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        # Use a persistent key 'biz_ctx_input'
-        st.text_area("Business Context / Requirements (AI Training)", key="biz_ctx", height=100)
-        st.markdown('</div>', unsafe_allow_html=True)
-    with col_opt:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        ind_list = ["General", "Finance", "Healthcare", "Retail", "Energy"]
-        ind_idx = ind_list.index(st.session_state.perm_cache['glossary_industry']) if st.session_state.perm_cache['glossary_industry'] in ind_list else 0
-        st.selectbox("Industry", ind_list, index=ind_idx, key="glossary_industry_box", on_change=update_cache, args=("glossary_industry", "glossary_industry_box"))
+    if _has_metadata:
+        col_ctx, col_opt = st.columns([2, 1])
+        with col_ctx:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            # Use a persistent key 'biz_ctx_input'
+            st.text_area("Business Context / Requirements (AI Training)", key="biz_ctx", height=100)
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col_opt:
+            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+            ind_list = ["General", "Finance", "Healthcare", "Retail", "Energy"]
+            ind_idx = ind_list.index(st.session_state.perm_cache['glossary_industry']) if st.session_state.perm_cache['glossary_industry'] in ind_list else 0
+            st.selectbox("Industry", ind_list, index=ind_idx, key="glossary_industry_box", on_change=update_cache, args=("glossary_industry", "glossary_industry_box"))
+            
+            opt_list = ["Business Term", "Business Definition", "Classifications"]
+            # Filter default to only valid options
+            safe_defaults = [o for o in st.session_state.perm_cache['glossary_options'] if o in opt_list]
+            st.multiselect("Information to Generate", opt_list, default=safe_defaults, key="glossary_options_box", on_change=update_cache, args=("glossary_options", "glossary_options_box"))
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Sync to internal vars for generation from anchor cache
+            st.session_state.industry = st.session_state.perm_cache['glossary_industry']
+            st.session_state.ai_options = st.session_state.perm_cache['glossary_options']
         
-        opt_list = ["Business Term", "Business Definition", "Classifications"]
-        # Filter default to only valid options
-        safe_defaults = [o for o in st.session_state.perm_cache['glossary_options'] if o in opt_list]
-        st.multiselect("Information to Generate", opt_list, default=safe_defaults, key="glossary_options_box", on_change=update_cache, args=("glossary_options", "glossary_options_box"))
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Sync to internal vars for generation from anchor cache
-        st.session_state.industry = st.session_state.perm_cache['glossary_industry']
-        st.session_state.ai_options = st.session_state.perm_cache['glossary_options']
-    
-    selected_asset_names = [m['name'] for m in st.session_state.tables_metadata.values()]
-    st.markdown(f"**Currently Processing Assets: {', '.join(selected_asset_names)}**")
+        selected_asset_names = [m['name'] for m in st.session_state.tables_metadata.values()]
+        st.markdown(f"**Currently Processing Assets: {', '.join(selected_asset_names)}**")
 
-    # New AI Suggestion button in this tab
-    if st.button("AI Suggestion", type="primary"):
-            # Generate all recommendations via Gemini
-            all_s = []
-            industry = st.session_state.get('industry', 'General')
-            options = st.session_state.get('ai_options', ["Business Term", "Business Definition"])
-            
-            for tid, meta in st.session_state.tables_metadata.items():
-                suggestions = generate_glossary_suggestions(meta['name'], meta['columns'], industry=industry, business_context=st.session_state.get('biz_ctx', ""), selected_options=options)
-                for s in suggestions:
-                    s['table_guid'] = tid
-                    s['table_name'] = meta['name']
-                    # Use raw column name, but provide the table name if it's a table
-                    orig_col = s.get('related_column', '')
-                    if s.get('type') == 'Table':
-                        s['display_column'] = meta['name']
-                    else:
-                        s['display_column'] = orig_col  # plain schema column name
+        # New AI Suggestion button in this tab
+        if st.button("AI Suggestion", type="primary"):
+                # Generate all recommendations via Gemini
+                all_s = []
+                industry = st.session_state.get('industry', 'General')
+                options = st.session_state.get('ai_options', ["Business Term", "Business Definition"])
+                
+                for tid, meta in st.session_state.tables_metadata.items():
+                    suggestions = generate_glossary_suggestions(meta['name'], meta['columns'], industry=industry, business_context=st.session_state.get('biz_ctx', ""), selected_options=options)
+                    for s in suggestions:
+                        s['table_guid'] = tid
+                        s['table_name'] = meta['name']
+                        # Use raw column name, but provide the table name if it's a table
+                        orig_col = s.get('related_column', '')
+                        if s.get('type') == 'Table':
+                            s['display_column'] = meta['name']
+                        else:
+                            s['display_column'] = orig_col  # plain schema column name
+                        
+                        if s.get('type') == 'Column':
+                            s['entity_guid'] = meta['column_guids'].get(orig_col)
+                        else:
+                            s['entity_guid'] = tid
+                    all_s.extend(suggestions)
+                
+                # Apply Automated Governance Rules (Deterministic Regex/Keyword matching)
+                all_s = GovernanceEngine.process_suggestions(all_s)
+                
+                st.session_state.glossary_suggestions = all_s
+                df = pd.DataFrame(all_s)
+                if not df.empty:
+                    # New Learning Loop Columns
+                    if 'Status' not in df.columns: df['Status'] = 'Pending'
                     
-                    if s.get('type') == 'Column':
-                        s['entity_guid'] = meta['column_guids'].get(orig_col)
-                    else:
-                        s['entity_guid'] = tid
-                all_s.extend(suggestions)
-            
-            # Apply Automated Governance Rules (Deterministic Regex/Keyword matching)
-            all_s = GovernanceEngine.process_suggestions(all_s)
-            
-            st.session_state.glossary_suggestions = all_s
-            df = pd.DataFrame(all_s)
-            if not df.empty:
-                # New Learning Loop Columns
-                if 'Status' not in df.columns: df['Status'] = 'Pending'
-                
-                st.session_state.glossary_df = df.rename(columns={
-                    "type": "Type", 
-                    "display_column": "Physical Term", 
-                    "name": "Business Term", 
-                    "description": "Description", 
-                    "classification": "Classification", 
-                    "tags": "Governance Tags",
-                    "confidence_score": "Confidence (%)"
-                })
-                
-                # Initialize Select column
-                st.session_state.glossary_df['Select'] = False
-                
-                # Reorder according to request: Select first, Confidence last, others in between.
-                # Explicitly exclude the internal GUID columns as requested in the image.
-                desired_cols = ['Select', 'Status', 'Type', 'Physical Term', 'Business Term', 'Description', 'Classification', 'Governance Tags', 'Confidence (%)']
-                actual_cols = [c for c in desired_cols if c in st.session_state.glossary_df.columns]
-                
-                # Internal columns to keep but hide (for processing)
-                internal_cols = ['table_guid', 'entity_guid', 'table_name', 'related_column'] 
-                
-                st.session_state.glossary_df = st.session_state.glossary_df[actual_cols + [c for c in internal_cols if c in st.session_state.glossary_df.columns]]
-                
-                st.session_state.raw_suggestions = all_s
-            st.rerun()
+                    st.session_state.glossary_df = df.rename(columns={
+                        "type": "Type", 
+                        "display_column": "Physical Term", 
+                        "name": "Business Term", 
+                        "description": "Description", 
+                        "classification": "Classification", 
+                        "tags": "Governance Tags",
+                        "confidence_score": "Confidence (%)"
+                    })
+                    
+                    # Initialize Select column
+                    st.session_state.glossary_df['Select'] = False
+                    
+                    # Reorder according to request: Select first, Confidence last, others in between.
+                    # Explicitly exclude the internal GUID columns as requested in the image.
+                    desired_cols = ['Select', 'Status', 'Type', 'Physical Term', 'Business Term', 'Description', 'Classification', 'Governance Tags', 'Confidence (%)']
+                    actual_cols = [c for c in desired_cols if c in st.session_state.glossary_df.columns]
+                    
+                    # Internal columns to keep but hide (for processing)
+                    internal_cols = ['table_guid', 'entity_guid', 'table_name', 'related_column'] 
+                    
+                    st.session_state.glossary_df = st.session_state.glossary_df[actual_cols + [c for c in internal_cols if c in st.session_state.glossary_df.columns]]
+                    
+                    st.session_state.glossary_df_version = st.session_state.get('glossary_df_version', 0) + 1
+                    st.session_state.raw_suggestions = all_s
+                st.rerun()
 
     if st.session_state.get('glossary_df') is not None:
         st.subheader("Recommended Business Terms ")
@@ -1735,15 +1821,20 @@ def render_glossary_tab():
             )
 
             prev_state = {i: bool(full_df.at[i, 'Select']) for i in tbl_idx}
+            _ver = st.session_state.get('glossary_df_version', 0)
             edited = st.data_editor(
                 full_df.loc[tbl_idx],
-                key=f"gloss_ed_{label}",
+                key=f"gloss_ed_{label}_v{_ver}",
                 hide_index=True,
                 use_container_width=True,
                 column_config=_col_config,
                 column_order=actual_visible,
             )
-            if not edited.equals(full_df.loc[tbl_idx]):
+            # Compare only user-editable columns to avoid false positives from dtype diffs
+            _cmp_cols = [c for c in actual_visible if c in edited.columns]
+            _edited_cmp = edited[_cmp_cols].reset_index(drop=True)
+            _orig_cmp = full_df.loc[tbl_idx, _cmp_cols].reset_index(drop=True)
+            if not _edited_cmp.equals(_orig_cmp):
                 for i, row in edited.iterrows():
                     if row['Select']:
                         edited.at[i, 'Status'] = 'Accepted'
@@ -1789,7 +1880,7 @@ def render_glossary_tab():
             else:
                 # Clear previous batch of the same source before adding the new one
                 _any_uc_rows = any(
-                    st.session_state.tables_metadata.get(str(row.get("table_guid", "")), {}).get("source") == "databricks"
+                    st.session_state.get('tables_metadata', {}).get(str(row.get("table_guid", "")), {}).get("source") == "databricks"
                     for _, row in selected_df.iterrows()
                 )
                 _clear_src = "Databricks Unity Catalog" if _any_uc_rows else "AI Suggester"
@@ -1804,7 +1895,7 @@ def render_glossary_tab():
                     physical_term = str(row.get("Physical Term") or row.get("related_column") or "")
                     if term_name:
                         # Detect whether the term came from a Databricks Unity Catalog table
-                        _tbl_meta = st.session_state.tables_metadata.get(str(row.get("table_guid", "")), {})
+                        _tbl_meta = st.session_state.get('tables_metadata', {}).get(str(row.get("table_guid", "")), {})
                         _src = "Databricks Unity Catalog" if _tbl_meta.get("source") == "databricks" else "AI Suggester"
                         WorkflowManager.create_suggested_term(
                             term_name        = term_name,
@@ -1817,8 +1908,7 @@ def render_glossary_tab():
                         )
                         queued_count += 1
                 if queued_count:
-                    st.session_state.glossary_df = None
-                    st.session_state.glossary_suggestions = []
+                    st.success(f"✅ {queued_count} term(s) sent to Review & Approval queue.")
                     st.session_state.selected_tab = "Review & Approval"
                     st.rerun()
                 else:

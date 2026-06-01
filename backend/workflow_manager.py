@@ -86,17 +86,13 @@ class WorkflowManager:
     def _append_audit_log(cls, entry, final_status, approver_comment):
         """
         Append a decision record to the persistent audit log.
-        Safe to call multiple times — deduplicates by (term_id, status)
-        and also by (term_name, status) to catch re-submitted terms.
+        Every action is recorded. Only skips exact duplicate (same term_id + same status).
         """
         log = cls.load_audit_log()
-        # Dedup: skip if same term_id OR same term_name already recorded with the same status
-        entry_name = (entry.get("term_name") or "").strip().lower()
+        # Only skip if the exact same term_id already has this exact status
         already = any(
-            e.get("status") == final_status and (
-                e.get("term_id") == entry.get("term_id") or
-                (entry_name and (e.get("term_name") or "").strip().lower() == entry_name)
-            )
+            e.get("term_id") == entry.get("term_id")
+            and e.get("status") == final_status
             for e in log
         )
         if already:
@@ -384,44 +380,46 @@ class WorkflowManager:
         entry_source  = entry.get("source", "")
         source_filter = entry_source if entry_source == "Databricks Unity Catalog" else None
 
-        # ── Check 1: Glossary Hub (master store) ─────────────────────────────
-        conflict_found, existing_id, existing_name, match_type = cls.check_conflict_with_hub(
-            term_name, source_filter=source_filter
-        )
+        conflict_found = False
+        existing_id    = None
+        existing_name  = None
+        match_type     = "No Conflict"
 
-        # ── Check 2: Audit log — same business term already Approved ─────────
-        if not conflict_found:
-            audit_log = cls.load_audit_log()
-            if source_filter:
-                audit_log = [e for e in audit_log if e.get("source") == source_filter]
-            same_approved = next(
+        # Load audit log once
+        audit_log = cls.load_audit_log()
+        if source_filter:
+            audit_log = [e for e in audit_log if e.get("source") == source_filter]
+
+        # ── Check 1: same connector + same table + same column + SAME business term
+        #    → conflict (merge only)
+        if physical and table:
+            same_col_same_term = next(
                 (
                     e for e in audit_log
-                    if e.get("status") == "Approved"
+                    if e.get("status") in ("Approved", "Approved (Merged)")
+                    and (e.get("physical_term") or "").strip().lower() == physical
+                    and (e.get("table_name") or "").strip().lower() == table
+                    and (e.get("source") or "") == entry_source
                     and (e.get("term_name") or "").strip().lower() == name_lower
                 ),
                 None,
             )
-            if same_approved:
+            if same_col_same_term:
                 conflict_found = True
-                existing_id    = same_approved.get("term_id")
-                existing_name  = same_approved.get("term_name")
+                existing_id    = same_col_same_term.get("term_id")
+                existing_name  = same_col_same_term.get("term_name")
                 match_type     = "Already Approved — Use Merge"
-        else:
-            audit_log = None  # already loaded lazily below if needed
 
-        # ── Check 3: Audit log — different business term for same physical term
-        if not conflict_found and physical:
-            if audit_log is None:
-                audit_log = cls.load_audit_log()
-                if source_filter:
-                    audit_log = [e for e in audit_log if e.get("source") == source_filter]
+        # ── Check 2: same connector + same table + same column + DIFFERENT business term
+        #    → conflict (all options: approve, reject, merge)
+        if not conflict_found and physical and table:
             diff_term = next(
                 (
                     e for e in audit_log
-                    if e.get("status") == "Approved"
+                    if e.get("status") in ("Approved", "Approved (Merged)")
                     and (e.get("physical_term") or "").strip().lower() == physical
                     and (e.get("table_name") or "").strip().lower() == table
+                    and (e.get("source") or "") == entry_source
                     and (e.get("term_name") or "").strip().lower() != name_lower
                 ),
                 None,
@@ -431,6 +429,17 @@ class WorkflowManager:
                 existing_id    = diff_term.get("term_id")
                 existing_name  = diff_term.get("term_name")
                 match_type     = "Different Business Term Already Approved"
+
+        # ── Check 3: Glossary Hub (master store) — exact/fuzzy name match ────
+        if not conflict_found:
+            hub_conflict, hub_id, hub_name, hub_match = cls.check_conflict_with_hub(
+                term_name, source_filter=source_filter
+            )
+            if hub_conflict:
+                conflict_found = True
+                existing_id    = hub_id
+                existing_name  = hub_name
+                match_type     = hub_match
 
         updates = {
             "conflict_checked":    True,
@@ -448,6 +457,17 @@ class WorkflowManager:
 
         cls._update_queue_entry(term_id, updates)
         return conflict_found, match_type
+
+    @classmethod
+    def _recheck_pending_conflicts(cls):
+        """
+        Re-run conflict checks on all remaining Pending/Conflict Detected entries.
+        Called after approve/merge to update conflict counts accurately.
+        """
+        queue = cls.load_approval_queue()
+        for entry in queue:
+            if entry.get("status") in ("Pending", "Conflict Detected"):
+                cls.run_conflict_check(entry["term_id"])
 
     # ──────────────────────────────────────────────────────────────────────────
     # 3. approveTerm()
@@ -503,6 +523,9 @@ class WorkflowManager:
 
         # 4. Trigger Power Automate
         cls.trigger_power_automate("term.approved", entry, webhooks)
+
+        # 5. Re-run conflict checks on remaining pending entries
+        cls._recheck_pending_conflicts()
 
         return True, "Term approved and added to Glossary Hub"
 
@@ -659,6 +682,9 @@ class WorkflowManager:
         # 4. Trigger Power Automate
         cls.trigger_power_automate("term.approved_merged", entry, webhooks)
 
+        # 5. Re-run conflict checks on remaining pending entries
+        cls._recheck_pending_conflicts()
+
         return True, "Term merged — existing audit log record updated to Approved (Merged)"
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -719,10 +745,12 @@ class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
-    def get_queue_stats(cls, source_filter=None):
+    def get_queue_stats(cls, source_filter=None, session_start=None):
         """
         Return a dict of {status: count} for the KPI cards.
         When source_filter is set, counts are restricted to entries matching that source.
+        When session_start is set, decided counts (Approved/Rejected/Merged) only include
+        entries decided after that timestamp (ISO format).
 
         Source of truth:
           - "Pending" and "Conflict Detected" → approval queue
@@ -736,6 +764,10 @@ class WorkflowManager:
         if source_filter:
             queue     = [e for e in queue     if e.get("source") == source_filter]
             audit_log = [e for e in audit_log if e.get("source") == source_filter]
+
+        # Filter audit log to only include decisions from current session
+        if session_start:
+            audit_log = [e for e in audit_log if (e.get("decision_date") or "") >= session_start]
 
         stats = {
             "Pending":           sum(1 for e in queue if e.get("status") == "Pending"),
