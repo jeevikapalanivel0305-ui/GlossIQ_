@@ -2869,6 +2869,7 @@ def render_conflict_detection_tab():
             term_name  = entry.get("term_name", "")
             definition = entry.get("definition", "")
             physical   = entry.get("physical_term") or entry.get("related_column") or ""
+            table_name = entry.get("table_name", "") or ""
             match_type = entry.get("conflict_match_type") or "Conflict Detected"
             ex_name    = entry.get("existing_term_name") or "—"
 
@@ -2880,23 +2881,31 @@ def render_conflict_detection_tab():
                 None,
             )
             ex_desc = (ex_entry.get("definition") or "") if ex_entry else ""
+            ex_table = (ex_entry.get("table_name") or "") if ex_entry else ""
 
             label = f"Conflict #{i+1}: `{physical or term_name}` — {match_type}"
             with st.expander(label, expanded=(i == 0)):
+                # Show table name
+                if table_name:
+                    st.markdown(f"**Table:** `{_html.escape(table_name)}`")
                 col_a, col_b = st.columns(2)
                 with col_a:
+                    _ex_table_html = f'<p style="font-size:12px; color:#991B1B; margin:0 0 4px 0;">Table: <strong>{_html.escape(ex_table)}</strong></p>' if ex_table else ""
                     st.markdown(f'''
                         <div style="background:#FEF2F2; border:1px solid #FECACA; border-radius:8px; padding:16px;">
                             <p style="font-size:11px; color:#991B1B; font-weight:700; text-transform:uppercase; margin:0 0 8px 0;">Existing Approved Term</p>
                             <p style="font-weight:600; color:#111827; margin:0 0 4px 0;">{_html.escape(ex_name)}</p>
+                            {_ex_table_html}
                             <p style="font-size:13px; color:#6B7280; margin:0;">{_html.escape(str(ex_desc)[:120])}</p>
                         </div>
                     ''', unsafe_allow_html=True)
                 with col_b:
+                    _new_table_html = f'<p style="font-size:12px; color:#92400E; margin:0 0 4px 0;">Table: <strong>{_html.escape(table_name)}</strong></p>' if table_name else ""
                     st.markdown(f'''
                         <div style="background:#FFF7ED; border:1px solid #FED7AA; border-radius:8px; padding:16px;">
                             <p style="font-size:11px; color:#92400E; font-weight:700; text-transform:uppercase; margin:0 0 8px 0;">Queued Term (New)</p>
                             <p style="font-weight:600; color:#111827; margin:0 0 4px 0;">{_html.escape(term_name)}</p>
+                            {_new_table_html}
                             <p style="font-size:13px; color:#6B7280; margin:0;">{_html.escape(str(definition)[:120])}</p>
                         </div>
                     ''', unsafe_allow_html=True)
