@@ -2887,10 +2887,10 @@ def render_conflict_detection_tab():
             with st.expander(label, expanded=(i == 0)):
                 # Show table name
                 if table_name:
-                    st.markdown(f"**Table:** `{_html.escape(table_name)}`")
+                    st.markdown(f"**Table:** `{_html.escape(table_name.upper())}`")
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    _ex_table_html = f'<p style="font-size:12px; color:#991B1B; margin:0 0 4px 0;">Table: <strong>{_html.escape(ex_table)}</strong></p>' if ex_table else ""
+                    _ex_table_html = f'<p style="font-size:12px; color:#991B1B; margin:0 0 4px 0;">Table: <strong>{_html.escape(ex_table.upper())}</strong></p>' if ex_table else ""
                     st.markdown(f'''
                         <div style="background:#FEF2F2; border:1px solid #FECACA; border-radius:8px; padding:16px;">
                             <p style="font-size:11px; color:#991B1B; font-weight:700; text-transform:uppercase; margin:0 0 8px 0;">Existing Approved Term</p>
@@ -2900,7 +2900,7 @@ def render_conflict_detection_tab():
                         </div>
                     ''', unsafe_allow_html=True)
                 with col_b:
-                    _new_table_html = f'<p style="font-size:12px; color:#92400E; margin:0 0 4px 0;">Table: <strong>{_html.escape(table_name)}</strong></p>' if table_name else ""
+                    _new_table_html = f'<p style="font-size:12px; color:#92400E; margin:0 0 4px 0;">Table: <strong>{_html.escape(table_name.upper())}</strong></p>' if table_name else ""
                     st.markdown(f'''
                         <div style="background:#FFF7ED; border:1px solid #FED7AA; border-radius:8px; padding:16px;">
                             <p style="font-size:11px; color:#92400E; font-weight:700; text-transform:uppercase; margin:0 0 8px 0;">Queued Term (New)</p>
