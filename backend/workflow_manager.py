@@ -20,7 +20,7 @@ import os
 import uuid
 import smtplib
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -739,6 +739,104 @@ class WorkflowManager:
                 results.append({"url": url, "error": str(exc), "success": False})
 
         return results
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 6. Approval Reminder via Power Automate
+    # ──────────────────────────────────────────────────────────────────────────
+
+    APPROVAL_DEADLINE_DAYS = 7
+    REMINDER_AFTER_DAYS = 3
+
+    @classmethod
+    def get_pending_terms_needing_reminder(cls):
+        """
+        Returns a list of pending terms that have been in the queue for >= 3 days
+        (reminder threshold) and have not yet exceeded the 7-day deadline.
+        Each item includes days_pending and deadline_date.
+        """
+        queue = cls.load_approval_queue()
+        now = datetime.now()
+        reminder_items = []
+
+        for entry in queue:
+            if entry.get("status") not in ("Pending", "Conflict Detected"):
+                continue
+            created = entry.get("created_date") or entry.get("created_at") or ""
+            if not created:
+                continue
+            try:
+                created_dt = datetime.fromisoformat(created)
+            except (ValueError, TypeError):
+                continue
+
+            days_pending = (now - created_dt).days
+            if days_pending >= cls.REMINDER_AFTER_DAYS:
+                reminder_items.append({
+                    **entry,
+                    "days_pending": days_pending,
+                    "deadline_date": (created_dt + timedelta(days=cls.APPROVAL_DEADLINE_DAYS)).isoformat(),
+                    "is_overdue": days_pending >= cls.APPROVAL_DEADLINE_DAYS,
+                })
+
+        return reminder_items
+
+    @classmethod
+    def send_approval_reminders(cls, webhooks=None):
+        """
+        Send Power Automate reminders for pending terms that have been waiting
+        >= 3 days. Returns (reminded_count, results_list).
+        """
+        items = cls.get_pending_terms_needing_reminder()
+        if not items:
+            return 0, []
+
+        if not webhooks:
+            return len(items), []
+
+        all_results = []
+        for item in items:
+            payload = {
+                "event": "term.approval_reminder",
+                "term_id": item.get("term_id"),
+                "term_name": item.get("term_name"),
+                "definition": item.get("definition"),
+                "source": item.get("source"),
+                "status": item.get("status"),
+                "created_date": item.get("created_date"),
+                "days_pending": item.get("days_pending"),
+                "deadline_date": item.get("deadline_date"),
+                "is_overdue": item.get("is_overdue"),
+                "timestamp": datetime.now().isoformat(),
+                "message": (
+                    f"OVERDUE: Term '{item.get('term_name')}' has exceeded the {cls.APPROVAL_DEADLINE_DAYS}-day approval deadline ({item.get('days_pending')} days pending)."
+                    if item.get("is_overdue")
+                    else f"REMINDER: Term '{item.get('term_name')}' has been pending for {item.get('days_pending')} days. Approval deadline is {cls.APPROVAL_DEADLINE_DAYS} days."
+                ),
+                "actions": ["send_notification"],
+            }
+
+            for wh in webhooks:
+                if wh.get("status") != "Active":
+                    continue
+                if wh.get("event") not in ("term.approval_reminder", "*"):
+                    continue
+                url = wh.get("url", "")
+                if not url or not url.startswith("https://"):
+                    all_results.append({"url": url, "term_id": item.get("term_id"), "error": "Invalid or non-HTTPS URL", "success": False})
+                    continue
+                try:
+                    resp = requests.post(url, json=payload, timeout=10)
+                    all_results.append({
+                        "url": url,
+                        "term_id": item.get("term_id"),
+                        "term_name": item.get("term_name"),
+                        "status_code": resp.status_code,
+                        "success": resp.ok,
+                    })
+                except Exception as exc:
+                    all_results.append({"url": url, "term_id": item.get("term_id"), "error": str(exc), "success": False})
+
+        return len(items), all_results
 
     # ──────────────────────────────────────────────────────────────────────────
     # Stats helper

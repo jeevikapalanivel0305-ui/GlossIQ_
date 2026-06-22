@@ -638,6 +638,42 @@ def render_review_tab():
         # When UC is connected, restrict queue to UC-sourced terms only
         if _uc_on:
             queue = [e for e in queue if e.get("source") == "Databricks Unity Catalog"]
+
+        # ── Power Automate Approval Reminders ─────────────────────────────────
+        reminder_items = WorkflowManager.get_pending_terms_needing_reminder()
+        if reminder_items:
+            overdue = [r for r in reminder_items if r.get("is_overdue")]
+            pending_reminders = [r for r in reminder_items if not r.get("is_overdue")]
+            with st.expander(f"⏰ **Approval Reminders** — {len(pending_reminders)} due, {len(overdue)} overdue", expanded=bool(overdue)):
+                st.caption("Terms must be approved within **7 days**. Reminders are sent on day 3 via Power Automate.")
+                if overdue:
+                    st.error(f"🚨 **{len(overdue)} term(s) overdue** — exceeded the 7-day approval deadline!")
+                    for item in overdue:
+                        st.markdown(f"- **{item.get('term_name')}** — pending **{item.get('days_pending')} days** (deadline passed)")
+                if pending_reminders:
+                    st.warning(f"⚠️ **{len(pending_reminders)} term(s)** pending ≥ 3 days — reminder due")
+                    for item in pending_reminders:
+                        st.markdown(f"- **{item.get('term_name')}** — pending **{item.get('days_pending')} days** (deadline: day 7)")
+                st.markdown("---")
+                if st.button("📧 Send Reminders via Power Automate", key="send_pa_reminders", type="primary"):
+                    _webhooks = st.session_state.get("webhooks", [])
+                    reminded_count, pa_results = WorkflowManager.send_approval_reminders(webhooks=_webhooks)
+                    if not _webhooks:
+                        st.warning("No webhooks configured. Go to **Integrations & API → Webhooks** and add a webhook with event `term.approval_reminder`.")
+                    elif reminded_count > 0:
+                        succeeded = [r for r in pa_results if r.get("success")]
+                        if succeeded:
+                            st.success(f"✅ Reminders sent for **{len(succeeded)}** term(s) via Power Automate.")
+                        else:
+                            active_wh = [w for w in _webhooks if w.get("status") == "Active" and w.get("event") in ("term.approval_reminder", "*")]
+                            if not active_wh:
+                                st.warning("No active webhook for event `term.approval_reminder`. Add one in **Integrations & API → Webhooks**.")
+                            else:
+                                err = pa_results[0].get("error", f"HTTP {pa_results[0].get('status_code', '?')}") if pa_results else "No response"
+                                st.error(f"Power Automate call failed: {err}")
+                    else:
+                        st.info("No terms currently need reminders.")
+
         # Default: show only undecided items
         undecided_statuses = ("Pending", "Conflict Detected")
         if not queue:
@@ -698,6 +734,22 @@ def render_review_tab():
                     has_conflict = bool(entry.get("conflict_found"))
                     suggested_raw  = entry.get("created_at") or entry.get("suggested_at") or ""
                     suggested_date = suggested_raw[:10] if suggested_raw else "—"
+
+                    # Deadline / reminder calculation (7-day deadline, 3-day reminder)
+                    _created_raw = entry.get("created_date") or suggested_raw or ""
+                    _deadline_tag = ""
+                    if _created_raw and status in ("Pending", "Conflict Detected"):
+                        try:
+                            from datetime import datetime as _dt, timedelta as _td
+                            _created_dt = _dt.fromisoformat(_created_raw)
+                            _days_pending = (_dt.now() - _created_dt).days
+                            _days_left = 7 - _days_pending
+                            if _days_left <= 0:
+                                _deadline_tag = '<span style="font-size:10px;font-weight:500;padding:2px 6px;border-radius:4px;background:#FEE2E2;color:#DC2626;">⏰ OVERDUE</span>'
+                            elif _days_pending >= 3:
+                                _deadline_tag = f'<span style="font-size:10px;font-weight:500;padding:2px 6px;border-radius:4px;background:#FEF3C7;color:#D97706;">⏰ {_days_left}d left</span>'
+                        except (ValueError, TypeError):
+                            pass
 
                     # Check audit log: if term already approved there, treat as conflict
                     # _tab1_audit is pre-scoped to UC when UC is connected (closure variable)
@@ -813,6 +865,7 @@ def render_review_tab():
                                 f'<span style="font-size:11px;font-weight:700;color:#2C2C2A;">{score}%</span>'
                               '</div>'
                               f'<div style="font-size:10px;color:#888780;line-height:1.5;">Suggested on<br/>{suggested_date}</div>'
+                              f'{_deadline_tag}'
                             '</div>'
                           '</div>'
                         '</div>'
@@ -3070,7 +3123,7 @@ def render_rbac_tab():
             })
         st.table(pd.DataFrame(role_data))
 
-        st.markdown("---")
+        st.markdown("---") 
         st.markdown("#### Add Custom Role")
         with st.form("add_role_form", clear_on_submit=True):
             new_role_name = st.text_input("Role Name", placeholder="e.g. Data Steward")
