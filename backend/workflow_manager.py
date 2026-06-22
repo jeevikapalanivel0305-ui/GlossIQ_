@@ -19,8 +19,7 @@ import json
 import os
 import uuid
 import smtplib
-import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from difflib import SequenceMatcher
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -30,7 +29,6 @@ SUGGESTED_TERMS_STORE = "backend/ai_suggested_terms.json"
 APPROVAL_QUEUE_STORE  = "backend/approval_queue.json"
 MASTER_STORE          = "backend/glossary_master.json"
 AUDIT_LOG_STORE       = "backend/audit_log.json"
-WEBHOOKS_STORE        = "backend/webhooks.json"
 
 
 class WorkflowManager:
@@ -273,9 +271,6 @@ class WorkflowManager:
         queue.append(queue_entry)
         cls._save(APPROVAL_QUEUE_STORE, queue)
 
-        # Notify via Power Automate: term added to approval queue
-        cls.trigger_power_automate("term.added_to_queue", queue_entry)
-
         # Immediately run a fresh conflict check so the KPI card and queue status
         # reflect any conflicts as soon as the term lands in the queue.
         cls.run_conflict_check(term_id)
@@ -478,12 +473,12 @@ class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
-    def approve_term(cls, term_id, approver_comment="", webhooks=None):
+    def approve_term(cls, term_id, approver_comment=""):
         """
         Approve a term:
           1. Audit log is written first (source of truth)
           2. Glossary Hub is rebuilt from the audit log
-          3. Queue status updated, Power Automate triggered
+          3. Queue status updated
 
         Returns: (success: bool, message: str)
         """
@@ -525,10 +520,7 @@ class WorkflowManager:
             "decision_date":    datetime.now().isoformat(),
         })
 
-        # 4. Trigger Power Automate
-        cls.trigger_power_automate("term.approved", entry, webhooks)
-
-        # 5. Re-run conflict checks on remaining pending entries
+        # 4. Re-run conflict checks on remaining pending entries
         cls._recheck_pending_conflicts()
 
         return True, "Term approved and added to Glossary Hub"
@@ -538,18 +530,17 @@ class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
-    def reject_term(cls, term_id, approver_comment="", webhooks=None):
+    def reject_term(cls, term_id, approver_comment=""):
         """
         Reject a term:
           1. Updates queue status → 'Rejected'
-          2. Triggers Power Automate webhook (sends email via PA flow)
 
-        Returns: (success: bool, message: str, pa_results: list)
+        Returns: (success: bool, message: str)
         """
         queue = cls.load_approval_queue()
         entry = next((e for e in queue if e["term_id"] == term_id), None)
         if not entry:
-            return False, "Term not found in queue", []
+            return False, "Term not found in queue"
 
         cls._update_queue_entry(term_id, {
             "status":           "Rejected",
@@ -560,9 +551,7 @@ class WorkflowManager:
         # Persist to audit log
         cls._append_audit_log(entry, "Rejected", approver_comment)
 
-        pa_results = cls.trigger_power_automate("term.rejected", entry, webhooks)
-
-        return True, "Term rejected", pa_results
+        return True, "Term rejected"
 
     # ──────────────────────────────────────────────────────────────────────────
     # Rejection email
@@ -651,7 +640,7 @@ class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
-    def approve_with_merge(cls, term_id, approver_comment="", webhooks=None):
+    def approve_with_merge(cls, term_id, approver_comment=""):
         """
         Approve and merge with an existing term already in the audit log.
         Updates the existing audit log row status to 'Approved (Merged)' in-place
@@ -683,192 +672,10 @@ class WorkflowManager:
             "decision_date":    datetime.now().isoformat(),
         })
 
-        # 4. Trigger Power Automate
-        cls.trigger_power_automate("term.approved_merged", entry, webhooks)
-
-        # 5. Re-run conflict checks on remaining pending entries
+        # 4. Re-run conflict checks on remaining pending entries
         cls._recheck_pending_conflicts()
 
         return True, "Term merged — existing audit log record updated to Approved (Merged)"
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # 5. triggerPowerAutomate()
-    # ──────────────────────────────────────────────────────────────────────────
-
-    @classmethod
-    def load_webhooks(cls):
-        """Load webhooks from persistent storage."""
-        return cls._load(WEBHOOKS_STORE)
-
-    @classmethod
-    def save_webhooks(cls, webhooks):
-        """Save webhooks to persistent storage."""
-        cls._save(WEBHOOKS_STORE, webhooks)
-
-    @classmethod
-    def trigger_power_automate(cls, event, term_data, webhooks=None):
-        """
-        Trigger a Power Automate flow via HTTP POST to configured webhooks.
-
-        Flow actions delivered in payload:
-          - send_notification  (email / Teams)
-          - log_audit_entry
-          - update_purview
-
-        Returns a list of results per webhook call.
-        """
-        # Load from persistent storage if not provided
-        if not webhooks:
-            webhooks = cls.load_webhooks()
-        if not webhooks:
-            return []
-
-        # Build event-specific message
-        term_name = term_data.get("term_name", "Unknown")
-        if event == "term.added_to_queue":
-            message = f"NEW TERM: '{term_name}' has been added to the Approval Queue. Please review and approve/reject within 7 days."
-        elif event == "term.approval_reminder":
-            days = term_data.get("days_pending", "?")
-            message = f"REMINDER: '{term_name}' has been pending approval for {days} days. Deadline is 7 days."
-        elif event == "term.approved":
-            message = f"APPROVED: '{term_name}' has been approved and added to the Glossary Hub."
-        elif event == "term.rejected":
-            message = f"REJECTED: '{term_name}' has been rejected."
-        else:
-            message = f"Event '{event}' for term '{term_name}'."
-
-        payload = {
-            "event":       event,
-            "term_id":     term_data.get("term_id"),
-            "term_name":   term_name,
-            "definition":  term_data.get("definition"),
-            "source":      term_data.get("source"),
-            "status":      term_data.get("status"),
-            "message":     message,
-            "timestamp":   datetime.now().isoformat(),
-            "actions":     ["send_notification", "log_audit_entry", "update_purview"],
-        }
-
-        results = []
-        for wh in webhooks:
-            if wh.get("status") != "Active":
-                continue
-            # Match by event name or wildcard
-            if wh.get("event") not in (event, "*"):
-                continue
-            url = wh.get("url", "")
-            if not url or not url.startswith("https://"):
-                results.append({"url": url, "error": "Invalid or non-HTTPS URL skipped", "success": False})
-                continue
-            try:
-                resp = requests.post(url, json=payload, timeout=10)
-                results.append({
-                    "url":         url,
-                    "status_code": resp.status_code,
-                    "success":     resp.ok,
-                })
-            except Exception as exc:
-                results.append({"url": url, "error": str(exc), "success": False})
-
-        return results
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # 6. Approval Reminder via Power Automate
-    # ──────────────────────────────────────────────────────────────────────────
-
-    APPROVAL_DEADLINE_DAYS = 7
-    REMINDER_AFTER_DAYS = 3
-
-    @classmethod
-    def get_pending_terms_needing_reminder(cls):
-        """
-        Returns a list of pending terms that have been in the queue for >= 3 days
-        (reminder threshold) and have not yet exceeded the 7-day deadline.
-        Each item includes days_pending and deadline_date.
-        """
-        queue = cls.load_approval_queue()
-        now = datetime.now()
-        reminder_items = []
-
-        for entry in queue:
-            if entry.get("status") not in ("Pending", "Conflict Detected"):
-                continue
-            created = entry.get("created_date") or entry.get("created_at") or ""
-            if not created:
-                continue
-            try:
-                created_dt = datetime.fromisoformat(created)
-            except (ValueError, TypeError):
-                continue
-
-            days_pending = (now - created_dt).days
-            if days_pending >= cls.REMINDER_AFTER_DAYS:
-                reminder_items.append({
-                    **entry,
-                    "days_pending": days_pending,
-                    "deadline_date": (created_dt + timedelta(days=cls.APPROVAL_DEADLINE_DAYS)).isoformat(),
-                    "is_overdue": days_pending >= cls.APPROVAL_DEADLINE_DAYS,
-                })
-
-        return reminder_items
-
-    @classmethod
-    def send_approval_reminders(cls, webhooks=None):
-        """
-        Send Power Automate reminders for pending terms that have been waiting
-        >= 3 days. Returns (reminded_count, results_list).
-        """
-        items = cls.get_pending_terms_needing_reminder()
-        if not items:
-            return 0, []
-
-        if not webhooks:
-            return len(items), []
-
-        all_results = []
-        for item in items:
-            payload = {
-                "event": "term.approval_reminder",
-                "term_id": item.get("term_id"),
-                "term_name": item.get("term_name"),
-                "definition": item.get("definition"),
-                "source": item.get("source"),
-                "status": item.get("status"),
-                "created_date": item.get("created_date"),
-                "days_pending": item.get("days_pending"),
-                "deadline_date": item.get("deadline_date"),
-                "is_overdue": item.get("is_overdue"),
-                "timestamp": datetime.now().isoformat(),
-                "message": (
-                    f"OVERDUE: Term '{item.get('term_name')}' has exceeded the {cls.APPROVAL_DEADLINE_DAYS}-day approval deadline ({item.get('days_pending')} days pending)."
-                    if item.get("is_overdue")
-                    else f"REMINDER: Term '{item.get('term_name')}' has been pending for {item.get('days_pending')} days. Approval deadline is {cls.APPROVAL_DEADLINE_DAYS} days."
-                ),
-                "actions": ["send_notification"],
-            }
-
-            for wh in webhooks:
-                if wh.get("status") != "Active":
-                    continue
-                if wh.get("event") not in ("term.approval_reminder", "*"):
-                    continue
-                url = wh.get("url", "")
-                if not url or not url.startswith("https://"):
-                    all_results.append({"url": url, "term_id": item.get("term_id"), "error": "Invalid or non-HTTPS URL", "success": False})
-                    continue
-                try:
-                    resp = requests.post(url, json=payload, timeout=10)
-                    all_results.append({
-                        "url": url,
-                        "term_id": item.get("term_id"),
-                        "term_name": item.get("term_name"),
-                        "status_code": resp.status_code,
-                        "success": resp.ok,
-                    })
-                except Exception as exc:
-                    all_results.append({"url": url, "term_id": item.get("term_id"), "error": str(exc), "success": False})
-
-        return len(items), all_results
 
     # ──────────────────────────────────────────────────────────────────────────
     # Stats helper

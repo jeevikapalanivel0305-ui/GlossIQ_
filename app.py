@@ -118,88 +118,6 @@ if 'queue_cleared_this_session' not in st.session_state:
 if 'session_start_time' not in st.session_state:
     st.session_state.session_start_time = datetime.now().isoformat()
 
-# ── Auto-send Power Automate reminders on 3rd day for pending terms ───────
-# Runs once per session to avoid spamming on every rerun.
-if 'auto_reminders_sent' not in st.session_state:
-    st.session_state.auto_reminders_sent = set()
-
-def _auto_send_approval_reminders():
-    """
-    Automatically trigger PA reminders for terms pending ≥ 3 days.
-    (The initial 'term added to queue' email is sent instantly by workflow_manager.)
-    This handles the 3rd-day follow-up reminder.
-    Runs once per term per session to avoid duplicate notifications.
-    """
-    reminder_items = WorkflowManager.get_pending_terms_needing_reminder()
-    if not reminder_items:
-        return
-    # Only send for terms not already reminded this session
-    new_items = [item for item in reminder_items if item["term_id"] not in st.session_state.auto_reminders_sent]
-    if not new_items:
-        return
-
-    # Build batch payload with all terms needing reminder
-    terms_list = []
-    for item in new_items:
-        terms_list.append({
-            "term_id": item.get("term_id"),
-            "term_name": item.get("term_name"),
-            "definition": item.get("definition"),
-            "source": item.get("source"),
-            "status": item.get("status"),
-            "created_date": item.get("created_date"),
-            "days_pending": item.get("days_pending"),
-            "deadline_date": item.get("deadline_date"),
-            "is_overdue": item.get("is_overdue"),
-        })
-
-    overdue = [t for t in terms_list if t.get("is_overdue")]
-    due = [t for t in terms_list if not t.get("is_overdue")]
-
-    summary_lines = []
-    if overdue:
-        summary_lines.append(f"🚨 {len(overdue)} OVERDUE term(s) (exceeded 7-day deadline):")
-        for t in overdue:
-            summary_lines.append(f"  - {t['term_name']} ({t['days_pending']} days pending)")
-    if due:
-        summary_lines.append(f"⚠️ {len(due)} term(s) pending ≥ 3 days (deadline: 7 days):")
-        for t in due:
-            summary_lines.append(f"  - {t['term_name']} ({t['days_pending']} days pending)")
-    summary_lines.append("\nPlease review and approve/reject these terms.")
-
-    payload = {
-        "event": "term.approval_reminder",
-        "total_terms_due": len(terms_list),
-        "overdue_count": len(overdue),
-        "reminder_count": len(due),
-        "terms": terms_list,
-        "message": "\n".join(summary_lines),
-        "timestamp": datetime.now().isoformat(),
-        "actions": ["send_notification"],
-    }
-
-    # Send via all matching webhooks (loaded from persistent storage)
-    webhooks = WorkflowManager.load_webhooks()
-    for wh in webhooks:
-        if wh.get("status") != "Active":
-            continue
-        if wh.get("event") not in ("term.approval_reminder", "*"):
-            continue
-        url = wh.get("url", "")
-        if not url or not url.startswith("https://"):
-            continue
-        try:
-            import requests as _req
-            _req.post(url, json=payload, timeout=10)
-        except Exception:
-            pass
-
-    # Mark all as reminded so we don't send again this session
-    for item in new_items:
-        st.session_state.auto_reminders_sent.add(item["term_id"])
-
-_auto_send_approval_reminders()
-
 # Integration Connectors State – reinitialise if 'image' key is missing (migration guard)
 _CONNECTOR_DEFAULTS = {
     'Microsoft Purview': {'letter': 'MP',  'image': 'purview.jfif',    'desc': 'Data Governance Map','color_bg': '#EFF6FF', 'color_txt': '#1D4ED8', 'push': True,  'pull': True,  'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
@@ -566,60 +484,6 @@ def render_integrations_tab():
         for i, name in enumerate(row_names):
             _render_connector_card(cols[i], name, connectors[name])
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # POWER AUTOMATE WEBHOOKS
-    # ═══════════════════════════════════════════════════════════════════════════
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("<p style='font-size:13px;font-weight:600;color:#6B7280;text-transform:uppercase;margin-bottom:12px;'>POWER AUTOMATE WEBHOOKS</p>", unsafe_allow_html=True)
-    st.caption("Paste the HTTP POST URL from your Power Automate flow here. Emails are sent automatically when terms are added to the queue and again on day 3 as a reminder.")
-
-    # Load from persistent file
-    if "webhooks" not in st.session_state:
-        st.session_state.webhooks = WorkflowManager.load_webhooks()
-
-    # Show existing webhooks
-    for i, wh in enumerate(st.session_state.webhooks):
-        wh_cols = st.columns([3, 2, 1, 1])
-        with wh_cols[0]:
-            st.text(f"🔗 {wh.get('url', '')[:60]}...")
-        with wh_cols[1]:
-            st.text(f"Event: {wh.get('event', '')}")
-        with wh_cols[2]:
-            status_label = "✅ Active" if wh.get("status") == "Active" else "⏸️ Inactive"
-            st.text(status_label)
-        with wh_cols[3]:
-            if st.button("🗑️", key=f"del_wh_{i}"):
-                st.session_state.webhooks.pop(i)
-                WorkflowManager.save_webhooks(st.session_state.webhooks)
-                st.rerun()
-
-    # Add new webhook form
-    with st.expander("➕ Add Webhook"):
-        wh_url = st.text_input(
-            "Power Automate HTTP POST URL",
-            placeholder="https://prod-xx.westus.logic.azure.com:443/workflows/...",
-            key="new_wh_url",
-        )
-        wh_event = st.selectbox(
-            "Event",
-            ["*", "term.added_to_queue", "term.approval_reminder", "term.approved", "term.rejected"],
-            key="new_wh_event",
-            help="* = all events. 'term.added_to_queue' fires instantly when a term enters the queue. 'term.approval_reminder' fires on day 3."
-        )
-        wh_status = st.selectbox("Status", ["Active", "Inactive"], key="new_wh_status")
-        if st.button("Add Webhook", type="primary", key="btn_add_webhook"):
-            if not wh_url or not wh_url.startswith("https://"):
-                st.error("Please enter a valid HTTPS URL from Power Automate.")
-            else:
-                st.session_state.webhooks.append({
-                    "url": wh_url,
-                    "event": wh_event,
-                    "status": wh_status,
-                })
-                WorkflowManager.save_webhooks(st.session_state.webhooks)
-                st.success(f"✅ Webhook added for event `{wh_event}`.")
-                st.rerun()
-
 @st.dialog("Review Term")
 def _review_term_dialog(idx):
     item = st.session_state.review_queue[idx]
@@ -647,7 +511,7 @@ def render_review_tab():
     st.markdown(
         '<div class="workbench-header"><div class="accent-line"></div>'
         '<h1 class="workbench-title">Review & Approval Workflow</h1>'
-        '<p class="workbench-desc">AI Suggestion → Conflict Check → Approve / Reject → Glossary Hub → Power Automate</p>'
+        '<p class="workbench-desc">AI Suggestion → Conflict Check → Approve / Reject → Glossary Hub</p>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -774,42 +638,6 @@ def render_review_tab():
         # When UC is connected, restrict queue to UC-sourced terms only
         if _uc_on:
             queue = [e for e in queue if e.get("source") == "Databricks Unity Catalog"]
-
-        # ── Power Automate Approval Reminders ─────────────────────────────────
-        reminder_items = WorkflowManager.get_pending_terms_needing_reminder()
-        if reminder_items:
-            overdue = [r for r in reminder_items if r.get("is_overdue")]
-            pending_reminders = [r for r in reminder_items if not r.get("is_overdue")]
-            with st.expander(f"⏰ **Approval Reminders** — {len(pending_reminders)} due, {len(overdue)} overdue", expanded=bool(overdue)):
-                st.caption("Terms must be approved within **7 days**. Reminders are sent on day 3 via Power Automate.")
-                if overdue:
-                    st.error(f"🚨 **{len(overdue)} term(s) overdue** — exceeded the 7-day approval deadline!")
-                    for item in overdue:
-                        st.markdown(f"- **{item.get('term_name')}** — pending **{item.get('days_pending')} days** (deadline passed)")
-                if pending_reminders:
-                    st.warning(f"⚠️ **{len(pending_reminders)} term(s)** pending ≥ 3 days — reminder due")
-                    for item in pending_reminders:
-                        st.markdown(f"- **{item.get('term_name')}** — pending **{item.get('days_pending')} days** (deadline: day 7)")
-                st.markdown("---")
-                if st.button("📧 Send Reminders via Power Automate", key="send_pa_reminders", type="primary"):
-                    _webhooks = st.session_state.get("webhooks", [])
-                    reminded_count, pa_results = WorkflowManager.send_approval_reminders(webhooks=_webhooks)
-                    if not _webhooks:
-                        st.warning("No webhooks configured. Go to **Integrations & API → Webhooks** and add a webhook with event `term.approval_reminder`.")
-                    elif reminded_count > 0:
-                        succeeded = [r for r in pa_results if r.get("success")]
-                        if succeeded:
-                            st.success(f"✅ Reminders sent for **{len(succeeded)}** term(s) via Power Automate.")
-                        else:
-                            active_wh = [w for w in _webhooks if w.get("status") == "Active" and w.get("event") in ("term.approval_reminder", "*")]
-                            if not active_wh:
-                                st.warning("No active webhook for event `term.approval_reminder`. Add one in **Integrations & API → Webhooks**.")
-                            else:
-                                err = pa_results[0].get("error", f"HTTP {pa_results[0].get('status_code', '?')}") if pa_results else "No response"
-                                st.error(f"Power Automate call failed: {err}")
-                    else:
-                        st.info("No terms currently need reminders.")
-
         # Default: show only undecided items
         undecided_statuses = ("Pending", "Conflict Detected")
         if not queue:
@@ -845,9 +673,6 @@ def render_review_tab():
             if not filtered:
                 st.info("No items match the current filter.")
             else:
-                # Get configured webhooks for Power Automate
-                webhooks = st.session_state.get("webhooks", [])
-
                 # Split into Table-level and Column-level groups
                 # Use (e.get("term_type") or "Column") to safely handle None values
                 table_entries  = [e for e in filtered if (e.get("term_type") or "Column").strip().lower() == "table"]
@@ -870,22 +695,6 @@ def render_review_tab():
                     has_conflict = bool(entry.get("conflict_found"))
                     suggested_raw  = entry.get("created_at") or entry.get("suggested_at") or ""
                     suggested_date = suggested_raw[:10] if suggested_raw else "—"
-
-                    # Deadline / reminder calculation (7-day deadline, 3-day reminder)
-                    _created_raw = entry.get("created_date") or suggested_raw or ""
-                    _deadline_tag = ""
-                    if _created_raw and status in ("Pending", "Conflict Detected"):
-                        try:
-                            from datetime import datetime as _dt, timedelta as _td
-                            _created_dt = _dt.fromisoformat(_created_raw)
-                            _days_pending = (_dt.now() - _created_dt).days
-                            _days_left = 7 - _days_pending
-                            if _days_left <= 0:
-                                _deadline_tag = '<span style="font-size:10px;font-weight:500;padding:2px 6px;border-radius:4px;background:#FEE2E2;color:#DC2626;">⏰ OVERDUE</span>'
-                            elif _days_pending >= 3:
-                                _deadline_tag = f'<span style="font-size:10px;font-weight:500;padding:2px 6px;border-radius:4px;background:#FEF3C7;color:#D97706;">⏰ {_days_left}d left</span>'
-                        except (ValueError, TypeError):
-                            pass
 
                     # Check audit log: if term already approved there, treat as conflict
                     # _tab1_audit is pre-scoped to UC when UC is connected (closure variable)
@@ -1001,7 +810,6 @@ def render_review_tab():
                                 f'<span style="font-size:11px;font-weight:700;color:#2C2C2A;">{score}%</span>'
                               '</div>'
                               f'<div style="font-size:10px;color:#888780;line-height:1.5;">Suggested on<br/>{suggested_date}</div>'
-                              f'{_deadline_tag}'
                             '</div>'
                           '</div>'
                         '</div>'
@@ -1045,7 +853,6 @@ def render_review_tab():
                                     ok, msg = WorkflowManager.approve_term(
                                         term_id,
                                         approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                        webhooks=webhooks,
                                     )
                                     st.success(msg) if ok else st.error(msg)
                                     st.rerun()
@@ -1057,7 +864,6 @@ def render_review_tab():
                                         ok, msg = WorkflowManager.approve_with_merge(
                                             term_id,
                                             approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                            webhooks=webhooks,
                                         )
                                         st.success(msg) if ok else st.error(msg)
                                         st.rerun()
@@ -1078,10 +884,9 @@ def render_review_tab():
                                                  use_container_width=True,
                                                  disabled=not _can_reject,
                                                  help="🔒 No permission to reject" if not _can_reject else None):
-                                        ok, msg, pa_results = WorkflowManager.reject_term(
+                                        ok, msg = WorkflowManager.reject_term(
                                             term_id,
                                             approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                            webhooks=webhooks,
                                         )
                                         if ok:
                                             st.session_state["_email_notification"] = (True, "Term rejected.")
@@ -1095,7 +900,6 @@ def render_review_tab():
                                         ok, msg = WorkflowManager.approve_with_merge(
                                             term_id,
                                             approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                            webhooks=webhooks,
                                         )
                                         st.success(msg) if ok else st.error(msg)
                                         st.rerun()
@@ -1113,31 +917,12 @@ def render_review_tab():
                                                  use_container_width=True,
                                                  disabled=not _can_reject,
                                                  help="🔒 No permission to reject" if not _can_reject else None):
-                                        ok, msg, pa_results = WorkflowManager.reject_term(
+                                        ok, msg = WorkflowManager.reject_term(
                                             term_id,
                                             approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                            webhooks=webhooks,
                                         )
                                         if ok:
-                                            active_wh = [w for w in webhooks if w.get("status") == "Active"
-                                                         and w.get("event") == "term.rejected"]
-                                            if not active_wh:
-                                                st.session_state["_email_notification"] = (
-                                                    False,
-                                                    "No active PA webhook for 'term.rejected'. "
-                                                    "Go to **Integrations & API → Webhooks**."
-                                                )
-                                            else:
-                                                succeeded = [r for r in pa_results if r.get("success")]
-                                                if succeeded:
-                                                    st.session_state["_email_notification"] = (
-                                                        True, "Power Automate triggered — email sent.")
-                                                else:
-                                                    err = (pa_results[0].get("error",
-                                                           f"HTTP {pa_results[0].get('status_code', '?')}")
-                                                           if pa_results else "No response")
-                                                    st.session_state["_email_notification"] = (
-                                                        False, f"PA call failed: {err}")
+                                            st.session_state["_email_notification"] = (True, "Term rejected.")
                                         else:
                                             st.error(msg)
                                         st.rerun()
@@ -1169,7 +954,6 @@ def render_review_tab():
                                             ok, msg = WorkflowManager.approve_with_merge(
                                                 term_id,
                                                 approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                                webhooks=webhooks,
                                             )
                                             st.success(msg) if ok else st.error(msg)
                                             st.rerun()
@@ -1260,7 +1044,6 @@ def render_review_tab():
                                 WorkflowManager.reject_term(
                                     e["term_id"],
                                     approver_comment="Bulk: rejected unconfirmed",
-                                    webhooks=webhooks,
                                 )
                         st.rerun()
                 with _fc2:
@@ -1273,7 +1056,6 @@ def render_review_tab():
                                 WorkflowManager.approve_term(
                                     e["term_id"],
                                     approver_comment="Bulk approve",
-                                    webhooks=webhooks,
                                 )
                         st.rerun()
                 with _fc3:
@@ -1286,7 +1068,6 @@ def render_review_tab():
                                 WorkflowManager.reject_term(
                                     e["term_id"],
                                     approver_comment="Bulk reject",
-                                    webhooks=webhooks,
                                 )
                         st.rerun()
 
