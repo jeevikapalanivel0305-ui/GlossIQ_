@@ -118,6 +118,88 @@ if 'queue_cleared_this_session' not in st.session_state:
 if 'session_start_time' not in st.session_state:
     st.session_state.session_start_time = datetime.now().isoformat()
 
+# ── Auto-send Power Automate reminders on 3rd day for pending terms ───────
+# Runs once per session to avoid spamming on every rerun.
+if 'auto_reminders_sent' not in st.session_state:
+    st.session_state.auto_reminders_sent = set()
+
+def _auto_send_approval_reminders():
+    """
+    Automatically trigger PA reminders for terms pending ≥ 3 days.
+    (The initial 'term added to queue' email is sent instantly by workflow_manager.)
+    This handles the 3rd-day follow-up reminder.
+    Runs once per term per session to avoid duplicate notifications.
+    """
+    reminder_items = WorkflowManager.get_pending_terms_needing_reminder()
+    if not reminder_items:
+        return
+    # Only send for terms not already reminded this session
+    new_items = [item for item in reminder_items if item["term_id"] not in st.session_state.auto_reminders_sent]
+    if not new_items:
+        return
+
+    # Build batch payload with all terms needing reminder
+    terms_list = []
+    for item in new_items:
+        terms_list.append({
+            "term_id": item.get("term_id"),
+            "term_name": item.get("term_name"),
+            "definition": item.get("definition"),
+            "source": item.get("source"),
+            "status": item.get("status"),
+            "created_date": item.get("created_date"),
+            "days_pending": item.get("days_pending"),
+            "deadline_date": item.get("deadline_date"),
+            "is_overdue": item.get("is_overdue"),
+        })
+
+    overdue = [t for t in terms_list if t.get("is_overdue")]
+    due = [t for t in terms_list if not t.get("is_overdue")]
+
+    summary_lines = []
+    if overdue:
+        summary_lines.append(f"🚨 {len(overdue)} OVERDUE term(s) (exceeded 7-day deadline):")
+        for t in overdue:
+            summary_lines.append(f"  - {t['term_name']} ({t['days_pending']} days pending)")
+    if due:
+        summary_lines.append(f"⚠️ {len(due)} term(s) pending ≥ 3 days (deadline: 7 days):")
+        for t in due:
+            summary_lines.append(f"  - {t['term_name']} ({t['days_pending']} days pending)")
+    summary_lines.append("\nPlease review and approve/reject these terms.")
+
+    payload = {
+        "event": "term.approval_reminder",
+        "total_terms_due": len(terms_list),
+        "overdue_count": len(overdue),
+        "reminder_count": len(due),
+        "terms": terms_list,
+        "message": "\n".join(summary_lines),
+        "timestamp": datetime.now().isoformat(),
+        "actions": ["send_notification"],
+    }
+
+    # Send via all matching webhooks (loaded from persistent storage)
+    webhooks = WorkflowManager.load_webhooks()
+    for wh in webhooks:
+        if wh.get("status") != "Active":
+            continue
+        if wh.get("event") not in ("term.approval_reminder", "*"):
+            continue
+        url = wh.get("url", "")
+        if not url or not url.startswith("https://"):
+            continue
+        try:
+            import requests as _req
+            _req.post(url, json=payload, timeout=10)
+        except Exception:
+            pass
+
+    # Mark all as reminded so we don't send again this session
+    for item in new_items:
+        st.session_state.auto_reminders_sent.add(item["term_id"])
+
+_auto_send_approval_reminders()
+
 # Integration Connectors State – reinitialise if 'image' key is missing (migration guard)
 _CONNECTOR_DEFAULTS = {
     'Microsoft Purview': {'letter': 'MP',  'image': 'purview.jfif',    'desc': 'Data Governance Map','color_bg': '#EFF6FF', 'color_txt': '#1D4ED8', 'push': True,  'pull': True,  'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
@@ -483,6 +565,60 @@ def render_integrations_tab():
         cols = st.columns(3)
         for i, name in enumerate(row_names):
             _render_connector_card(cols[i], name, connectors[name])
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # POWER AUTOMATE WEBHOOKS
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<p style='font-size:13px;font-weight:600;color:#6B7280;text-transform:uppercase;margin-bottom:12px;'>POWER AUTOMATE WEBHOOKS</p>", unsafe_allow_html=True)
+    st.caption("Paste the HTTP POST URL from your Power Automate flow here. Emails are sent automatically when terms are added to the queue and again on day 3 as a reminder.")
+
+    # Load from persistent file
+    if "webhooks" not in st.session_state:
+        st.session_state.webhooks = WorkflowManager.load_webhooks()
+
+    # Show existing webhooks
+    for i, wh in enumerate(st.session_state.webhooks):
+        wh_cols = st.columns([3, 2, 1, 1])
+        with wh_cols[0]:
+            st.text(f"🔗 {wh.get('url', '')[:60]}...")
+        with wh_cols[1]:
+            st.text(f"Event: {wh.get('event', '')}")
+        with wh_cols[2]:
+            status_label = "✅ Active" if wh.get("status") == "Active" else "⏸️ Inactive"
+            st.text(status_label)
+        with wh_cols[3]:
+            if st.button("🗑️", key=f"del_wh_{i}"):
+                st.session_state.webhooks.pop(i)
+                WorkflowManager.save_webhooks(st.session_state.webhooks)
+                st.rerun()
+
+    # Add new webhook form
+    with st.expander("➕ Add Webhook"):
+        wh_url = st.text_input(
+            "Power Automate HTTP POST URL",
+            placeholder="https://prod-xx.westus.logic.azure.com:443/workflows/...",
+            key="new_wh_url",
+        )
+        wh_event = st.selectbox(
+            "Event",
+            ["*", "term.added_to_queue", "term.approval_reminder", "term.approved", "term.rejected"],
+            key="new_wh_event",
+            help="* = all events. 'term.added_to_queue' fires instantly when a term enters the queue. 'term.approval_reminder' fires on day 3."
+        )
+        wh_status = st.selectbox("Status", ["Active", "Inactive"], key="new_wh_status")
+        if st.button("Add Webhook", type="primary", key="btn_add_webhook"):
+            if not wh_url or not wh_url.startswith("https://"):
+                st.error("Please enter a valid HTTPS URL from Power Automate.")
+            else:
+                st.session_state.webhooks.append({
+                    "url": wh_url,
+                    "event": wh_event,
+                    "status": wh_status,
+                })
+                WorkflowManager.save_webhooks(st.session_state.webhooks)
+                st.success(f"✅ Webhook added for event `{wh_event}`.")
+                st.rerun()
 
 @st.dialog("Review Term")
 def _review_term_dialog(idx):

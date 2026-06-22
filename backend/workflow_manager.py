@@ -30,6 +30,7 @@ SUGGESTED_TERMS_STORE = "backend/ai_suggested_terms.json"
 APPROVAL_QUEUE_STORE  = "backend/approval_queue.json"
 MASTER_STORE          = "backend/glossary_master.json"
 AUDIT_LOG_STORE       = "backend/audit_log.json"
+WEBHOOKS_STORE        = "backend/webhooks.json"
 
 
 class WorkflowManager:
@@ -271,6 +272,9 @@ class WorkflowManager:
         }
         queue.append(queue_entry)
         cls._save(APPROVAL_QUEUE_STORE, queue)
+
+        # Notify via Power Automate: term added to approval queue
+        cls.trigger_power_automate("term.added_to_queue", queue_entry)
 
         # Immediately run a fresh conflict check so the KPI card and queue status
         # reflect any conflicts as soon as the term lands in the queue.
@@ -692,6 +696,16 @@ class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
+    def load_webhooks(cls):
+        """Load webhooks from persistent storage."""
+        return cls._load(WEBHOOKS_STORE)
+
+    @classmethod
+    def save_webhooks(cls, webhooks):
+        """Save webhooks to persistent storage."""
+        cls._save(WEBHOOKS_STORE, webhooks)
+
+    @classmethod
     def trigger_power_automate(cls, event, term_data, webhooks=None):
         """
         Trigger a Power Automate flow via HTTP POST to configured webhooks.
@@ -703,16 +717,34 @@ class WorkflowManager:
 
         Returns a list of results per webhook call.
         """
+        # Load from persistent storage if not provided
+        if not webhooks:
+            webhooks = cls.load_webhooks()
         if not webhooks:
             return []
+
+        # Build event-specific message
+        term_name = term_data.get("term_name", "Unknown")
+        if event == "term.added_to_queue":
+            message = f"NEW TERM: '{term_name}' has been added to the Approval Queue. Please review and approve/reject within 7 days."
+        elif event == "term.approval_reminder":
+            days = term_data.get("days_pending", "?")
+            message = f"REMINDER: '{term_name}' has been pending approval for {days} days. Deadline is 7 days."
+        elif event == "term.approved":
+            message = f"APPROVED: '{term_name}' has been approved and added to the Glossary Hub."
+        elif event == "term.rejected":
+            message = f"REJECTED: '{term_name}' has been rejected."
+        else:
+            message = f"Event '{event}' for term '{term_name}'."
 
         payload = {
             "event":       event,
             "term_id":     term_data.get("term_id"),
-            "term_name":   term_data.get("term_name"),
+            "term_name":   term_name,
             "definition":  term_data.get("definition"),
             "source":      term_data.get("source"),
             "status":      term_data.get("status"),
+            "message":     message,
             "timestamp":   datetime.now().isoformat(),
             "actions":     ["send_notification", "log_audit_entry", "update_purview"],
         }
