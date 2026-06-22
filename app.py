@@ -90,6 +90,23 @@ if 'user_name' not in st.session_state:
 if 'uc_search_results' not in st.session_state:
     st.session_state.uc_search_results = []
 
+# ── RBAC: Role-Based Access Control configuration ─────────────────────────
+if 'rbac_users' not in st.session_state:
+    st.session_state.rbac_users = {
+        "Jeevika P.": {"role": "Administrator", "can_read": True, "can_approve": True, "can_reject": True, "can_suggest": True, "can_edit_glossary": True},
+    }
+if 'rbac_roles' not in st.session_state:
+    st.session_state.rbac_roles = {
+        "Administrator": {"can_read": True, "can_approve": True, "can_reject": True, "can_suggest": True, "can_edit_glossary": True, "can_manage_rbac": True},
+    }
+# Migration: ensure can_read exists in all roles and users (added after initial release)
+for _r in st.session_state.rbac_roles.values():
+    if "can_read" not in _r:
+        _r["can_read"] = True
+for _u in st.session_state.rbac_users.values():
+    if "can_read" not in _u:
+        _u["can_read"] = True
+
 # ── On every fresh browser session, wipe Pending/Conflict entries from the
 #    approval queue so the Review tab starts clean.  Approved/Rejected entries
 #    remain in the audit log and are untouched.
@@ -268,10 +285,21 @@ def render_sidebar():
 
         # Profile & RBAC Switcher
         st.markdown('<div class="sidebar-category">System Admin</div>', unsafe_allow_html=True)
+        st.button(
+            "RBAC Management", 
+            key="nav_RBAC", 
+            icon=":material/admin_panel_settings:", 
+            use_container_width=True, 
+            on_click=set_nav_tab, 
+            args=("RBAC Management",),
+            type="primary" if current_tab == "RBAC Management" else "secondary"
+        )
+        _available_demo_roles = list(st.session_state.rbac_roles.keys())
+        _current_role_idx = _available_demo_roles.index(st.session_state.user_role) if st.session_state.user_role in _available_demo_roles else 0
         new_role = st.selectbox(
             "Switch Role (Demo)", 
-            ["Administrator", "Editor", "Viewer"], 
-            index=["Administrator", "Editor", "Viewer"].index(st.session_state.user_role)
+            _available_demo_roles, 
+            index=_current_role_idx
         )
         if new_role != st.session_state.user_role:
             st.session_state.user_role = new_role
@@ -495,6 +523,11 @@ def render_review_tab():
             st.success(f"📧 {email_msg}")
         else:
             st.warning(f"📧 Email not sent: {email_msg}")
+
+    # ── RBAC notice ─────────────────────────────────────────────────────────
+    _review_perms = get_current_user_permissions()
+    if not _review_perms.get("can_approve") and not _review_perms.get("can_reject"):
+        st.info(f"🔒 **{st.session_state.user_name}** — You have **view-only** access to this queue. Approve/Reject actions require elevated permissions (manage in **RBAC Management**).")
 
     # ── Unity Catalog scope: when connected, every sub-tab is restricted to UC terms ──
     _uc_on     = st.session_state.get('integration_connectors', {}).get('Databricks Unity', {}).get('status') == 'Connected'
@@ -792,6 +825,11 @@ def render_review_tab():
                     with card_col:
                         st.markdown(card, unsafe_allow_html=True)
 
+                        # RBAC permission check
+                        _user_perms = get_current_user_permissions()
+                        _can_approve = _user_perms.get("can_approve", False)
+                        _can_reject = _user_perms.get("can_reject", False)
+
                         if status in ("Pending", "Conflict Detected"):
                             if audit_conflict:
                                 # Same connector+table+column+term: ✓ disabled, ✕ hidden, 🔀 Merge visible
@@ -813,7 +851,8 @@ def render_review_tab():
                             with ba:
                                 if st.button("✓", key=f"approve_{term_id}",
                                              use_container_width=True, type="primary",
-                                             disabled=audit_conflict):
+                                             disabled=(audit_conflict or not _can_approve),
+                                             help="🔒 No permission to approve" if not _can_approve else None):
                                     ok, msg = WorkflowManager.approve_term(
                                         term_id,
                                         approver_comment=st.session_state.get(f"comment_{term_id}", ""),
@@ -847,7 +886,9 @@ def render_review_tab():
                                 # All three buttons visible: Approve, Reject, Merge
                                 with br:
                                     if st.button("✕", key=f"reject_{term_id}",
-                                                 use_container_width=True):
+                                                 use_container_width=True,
+                                                 disabled=not _can_reject,
+                                                 help="🔒 No permission to reject" if not _can_reject else None):
                                         ok, msg, pa_results = WorkflowManager.reject_term(
                                             term_id,
                                             approver_comment=st.session_state.get(f"comment_{term_id}", ""),
@@ -880,7 +921,9 @@ def render_review_tab():
                             else:
                                 with br:
                                     if st.button("✕", key=f"reject_{term_id}",
-                                                 use_container_width=True):
+                                                 use_container_width=True,
+                                                 disabled=not _can_reject,
+                                                 help="🔒 No permission to reject" if not _can_reject else None):
                                         ok, msg, pa_results = WorkflowManager.reject_term(
                                             term_id,
                                             approver_comment=st.session_state.get(f"comment_{term_id}", ""),
@@ -1017,10 +1060,12 @@ def render_review_tab():
                     unsafe_allow_html=True,
                 )
                 _fc1, _fc2, _fc3 = st.columns([2, 2, 2])
+                _bulk_perms = get_current_user_permissions()
                 with _fc1:
                     if st.button("✕ Reject Unconfirmed", key="bulk_reject_unconfirmed",
                                  use_container_width=True,
-                                 help="Reject all conflict-flagged pending terms"):
+                                 disabled=not _bulk_perms.get("can_reject", False),
+                                 help="🔒 No permission" if not _bulk_perms.get("can_reject") else "Reject all conflict-flagged pending terms"):
                         for e in all_active:
                             if e.get("conflict_found"):
                                 WorkflowManager.reject_term(
@@ -1032,7 +1077,8 @@ def render_review_tab():
                 with _fc2:
                     if st.button("✓ Approve Selected", key="bulk_approve",
                                  use_container_width=True, type="primary",
-                                 disabled=(n_sel == 0)):
+                                 disabled=(n_sel == 0 or not _bulk_perms.get("can_approve", False)),
+                                 help="🔒 No permission" if not _bulk_perms.get("can_approve") else None):
                         for e in all_active:
                             if st.session_state.get(f"sel_{e['term_id']}", False):
                                 WorkflowManager.approve_term(
@@ -1044,7 +1090,8 @@ def render_review_tab():
                 with _fc3:
                     if st.button("✕ Reject Selected", key="bulk_reject",
                                  use_container_width=True,
-                                 disabled=(n_sel == 0)):
+                                 disabled=(n_sel == 0 or not _bulk_perms.get("can_reject", False)),
+                                 help="🔒 No permission" if not _bulk_perms.get("can_reject") else None):
                         for e in all_active:
                             if st.session_state.get(f"sel_{e['term_id']}", False):
                                 WorkflowManager.reject_term(
@@ -2912,6 +2959,177 @@ def render_conflict_detection_tab():
 
 
 
+# ============================================
+# RBAC HELPERS
+# ============================================
+
+def get_current_user_permissions():
+    """Return permissions dict for the currently active user, respecting demo role switcher."""
+    role = st.session_state.user_role
+    rbac_roles = st.session_state.get('rbac_roles', {})
+    # If the user switched to a specific role via the demo switcher, use that role's permissions
+    if role in rbac_roles:
+        return rbac_roles[role]
+    # Fallback: check per-user overrides
+    user = st.session_state.user_name
+    rbac_users = st.session_state.get('rbac_users', {})
+    if user in rbac_users:
+        return rbac_users[user]
+    return {"can_read": False, "can_approve": False, "can_reject": False, "can_suggest": False, "can_edit_glossary": False, "can_manage_rbac": False}
+
+
+def render_rbac_tab():
+    render_dashboard_header("Access Control")
+    st.markdown(
+        '<div class="workbench-header"><div class="accent-line"></div>'
+        '<h1 class="workbench-title">Access Control</h1>'
+        '<p class="workbench-desc">Manage user roles and permissions — control who can approve, reject, suggest, or edit glossary terms.</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    perms = get_current_user_permissions()
+    if not perms.get("can_manage_rbac") and st.session_state.user_role != "Administrator":
+        st.warning("🔒 You do not have permission to manage RBAC settings. Contact an Administrator.")
+        # Show read-only view of current user's permissions
+        st.markdown("#### Your Permissions")
+        st.markdown(f"- **Approve Terms:** {'✅ Yes' if perms.get('can_approve') else '❌ No'}")
+        st.markdown(f"- **Reject Terms:** {'✅ Yes' if perms.get('can_reject') else '❌ No'}")
+        st.markdown(f"- **Suggest Terms:** {'✅ Yes' if perms.get('can_suggest') else '❌ No'}")
+        st.markdown(f"- **Edit Glossary:** {'✅ Yes' if perms.get('can_edit_glossary') else '❌ No'}")
+        return
+
+    rbac_tab1, rbac_tab2, rbac_tab3 = st.tabs(["👥 Users & Permissions", "🎭 Roles", "➕ Add User"])
+
+    # ── Tab 1: Users & Permissions ────────────────────────────────────────────
+    with rbac_tab1:
+        st.markdown("#### User Permissions")
+        st.caption("Assign roles and fine-grained permissions to each user.")
+
+        rbac_users = st.session_state.rbac_users
+        rbac_roles = st.session_state.rbac_roles
+
+        for user_name, user_perms in rbac_users.items():
+            with st.expander(f"{'🟢' if user_name == st.session_state.user_name else '⚪'} {user_name}  —  {user_perms.get('role', 'Viewer')}", expanded=(user_name == st.session_state.user_name)):
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    available_roles = list(rbac_roles.keys())
+                    current_role_idx = available_roles.index(user_perms.get("role", "Viewer")) if user_perms.get("role", "Viewer") in available_roles else 0
+                    new_role = st.selectbox(
+                        "Role",
+                        available_roles,
+                        index=current_role_idx,
+                        key=f"rbac_role_{user_name}",
+                    )
+                    if new_role != user_perms.get("role"):
+                        # Auto-apply role defaults
+                        role_defaults = rbac_roles.get(new_role, {})
+                        st.session_state.rbac_users[user_name]["role"] = new_role
+                        st.session_state.rbac_users[user_name]["can_approve"] = role_defaults.get("can_approve", False)
+                        st.session_state.rbac_users[user_name]["can_reject"] = role_defaults.get("can_reject", False)
+                        st.session_state.rbac_users[user_name]["can_suggest"] = role_defaults.get("can_suggest", False)
+                        st.session_state.rbac_users[user_name]["can_edit_glossary"] = role_defaults.get("can_edit_glossary", False)
+                        st.rerun()
+                with col2:
+                    st.markdown("**Permissions Override:**")
+                    p_col0, p_col1, p_col2, p_col3, p_col4 = st.columns(5)
+                    with p_col0:
+                        read = st.checkbox("Read", value=user_perms.get("can_read", False), key=f"rbac_read_{user_name}")
+                    with p_col1:
+                        approve = st.checkbox("Approve", value=user_perms.get("can_approve", False), key=f"rbac_approve_{user_name}")
+                    with p_col2:
+                        reject = st.checkbox("Reject", value=user_perms.get("can_reject", False), key=f"rbac_reject_{user_name}")
+                    with p_col3:
+                        suggest = st.checkbox("Suggest", value=user_perms.get("can_suggest", False), key=f"rbac_suggest_{user_name}")
+                    with p_col4:
+                        edit_gl = st.checkbox("Edit Glossary", value=user_perms.get("can_edit_glossary", False), key=f"rbac_edit_{user_name}")
+
+                    # Persist changes
+                    st.session_state.rbac_users[user_name]["can_read"] = read
+                    st.session_state.rbac_users[user_name]["can_approve"] = approve
+                    st.session_state.rbac_users[user_name]["can_reject"] = reject
+                    st.session_state.rbac_users[user_name]["can_suggest"] = suggest
+                    st.session_state.rbac_users[user_name]["can_edit_glossary"] = edit_gl
+
+    # ── Tab 2: Roles ─────────────────────────────────────────────────────────
+    with rbac_tab2:
+        st.markdown("#### Role Definitions")
+        st.caption("Each role defines default permissions applied when assigning a user to that role.")
+
+        rbac_roles = st.session_state.rbac_roles
+        role_data = []
+        for role_name, role_perms in rbac_roles.items():
+            role_data.append({
+                "Role": role_name,
+                "Read": "✅" if role_perms.get("can_read") else "❌",
+                "Approve": "✅" if role_perms.get("can_approve") else "❌",
+                "Reject": "✅" if role_perms.get("can_reject") else "❌",
+                "Suggest": "✅" if role_perms.get("can_suggest") else "❌",
+                "Edit Glossary": "✅" if role_perms.get("can_edit_glossary") else "❌",
+                "Manage RBAC": "✅" if role_perms.get("can_manage_rbac") else "❌",
+            })
+        st.table(pd.DataFrame(role_data))
+
+        st.markdown("---")
+        st.markdown("#### Add Custom Role")
+        with st.form("add_role_form", clear_on_submit=True):
+            new_role_name = st.text_input("Role Name", placeholder="e.g. Data Steward")
+            rc0, rc1, rc2, rc3, rc4, rc5 = st.columns(6)
+            with rc0:
+                nr_read = st.checkbox("Can Read", value=True, key="nr_read")
+            with rc1:
+                nr_approve = st.checkbox("Can Approve", key="nr_approve")
+            with rc2:
+                nr_reject = st.checkbox("Can Reject", key="nr_reject")
+            with rc3:
+                nr_suggest = st.checkbox("Can Suggest", value=True, key="nr_suggest")
+            with rc4:
+                nr_edit = st.checkbox("Can Edit Glossary", key="nr_edit")
+            with rc5:
+                nr_manage = st.checkbox("Can Manage RBAC", key="nr_manage")
+            if st.form_submit_button("Add Role", type="primary"):
+                if not new_role_name.strip():
+                    st.error("Role name is required.")
+                elif new_role_name.strip() in rbac_roles:
+                    st.warning(f"Role '{new_role_name}' already exists.")
+                else:
+                    st.session_state.rbac_roles[new_role_name.strip()] = {
+                        "can_read": nr_read,
+                        "can_approve": nr_approve,
+                        "can_reject": nr_reject,
+                        "can_suggest": nr_suggest,
+                        "can_edit_glossary": nr_edit,
+                        "can_manage_rbac": nr_manage,
+                    }
+                    st.success(f"✅ Role '{new_role_name.strip()}' created.")
+                    st.rerun()
+
+    # ── Tab 3: Add User ──────────────────────────────────────────────────────
+    with rbac_tab3:
+        st.markdown("#### Add New User")
+        with st.form("add_user_form", clear_on_submit=True):
+            new_user_name = st.text_input("User Name", placeholder="e.g. John D.")
+            _existing_roles = list(st.session_state.rbac_roles.keys())
+            new_user_role = st.selectbox("Assign Role", _existing_roles)
+            if st.form_submit_button("Add User", type="primary"):
+                if not new_user_name.strip():
+                    st.error("User name is required.")
+                elif new_user_name.strip() in st.session_state.rbac_users:
+                    st.warning(f"User '{new_user_name}' already exists.")
+                else:
+                    role_defaults = st.session_state.rbac_roles.get(new_user_role, {})
+                    st.session_state.rbac_users[new_user_name.strip()] = {
+                        "role": new_user_role,
+                        "can_read": role_defaults.get("can_read", True),
+                        "can_approve": role_defaults.get("can_approve", False),
+                        "can_reject": role_defaults.get("can_reject", False),
+                        "can_suggest": role_defaults.get("can_suggest", False),
+                        "can_edit_glossary": role_defaults.get("can_edit_glossary", False),
+                    }
+                    st.success(f"✅ User '{new_user_name.strip()}' added with role '{new_user_role}'.")
+                    st.rerun()
+
+
 def main():
     load_css('style.css')
     render_sidebar()
@@ -2925,6 +3143,7 @@ def main():
     elif tab == "Asset Search": render_search_tab()
     elif tab == "Glossary AI": render_glossary_tab()
     elif tab in ("Glossary Hub", "Master Glossary"): render_master_glossary_tab()
+    elif tab == "RBAC Management": render_rbac_tab()
     else:
         render_dashboard_header(tab)
         st.info(f"The '{tab}' module is currently under construction.")
