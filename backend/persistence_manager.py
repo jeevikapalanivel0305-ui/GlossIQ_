@@ -3,6 +3,49 @@ import os
 from datetime import datetime
 
 MASTER_STORE = "backend/glossary_master.json"
+RBAC_STORE = "backend/rbac_store.json"
+
+# ── Default RBAC data (used when no persisted file exists) ─────────────────
+_DEFAULT_RBAC = {
+    "users": {
+        "jeevika.palanivelu@ilink-systems.com": {"name": "Jeevika", "email": "jeevika.palanivelu@ilink-systems.com", "password": "user321", "role": "Administrator", "can_read": True, "can_approve": True, "can_reject": True, "can_suggest": True, "can_edit_glossary": True},
+    },
+    "roles": {
+        "Administrator": {"can_read": True, "can_approve": True, "can_reject": True, "can_suggest": True, "can_edit_glossary": True, "can_manage_rbac": True},
+        "Reader": {"can_read": True, "can_approve": False, "can_reject": False, "can_suggest": False, "can_edit_glossary": False, "can_manage_rbac": False},
+    },
+}
+
+
+def _load_rbac_store():
+    """Load RBAC users and roles from persistent JSON file."""
+    if not os.path.exists(RBAC_STORE):
+        return None
+    try:
+        with open(RBAC_STORE, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def _save_rbac_store(users, roles):
+    """Save RBAC users and roles to persistent JSON file."""
+    os.makedirs(os.path.dirname(RBAC_STORE), exist_ok=True)
+    with open(RBAC_STORE, 'w') as f:
+        json.dump({"users": users, "roles": roles}, f, indent=4)
+
+
+def load_rbac():
+    """Return (users_dict, roles_dict) from persisted store or defaults."""
+    data = _load_rbac_store()
+    if data and "users" in data and "roles" in data:
+        return data["users"], data["roles"]
+    return dict(_DEFAULT_RBAC["users"]), dict(_DEFAULT_RBAC["roles"])
+
+
+def save_rbac(users, roles):
+    """Persist current RBAC state to disk."""
+    _save_rbac_store(users, roles)
 
 class PersistenceManager:
     """

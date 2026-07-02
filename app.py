@@ -15,7 +15,7 @@ from backend.databricks_unity_connector import DatabricksUnityConnector
 from backend.ai_recommender import generate_glossary_suggestions
 from backend.internal_governance import generate_internal_governance
 from backend.governance_engine import GovernanceEngine
-from backend.persistence_manager import PersistenceManager
+from backend.persistence_manager import PersistenceManager, load_rbac, save_rbac
 from backend.workflow_manager import WorkflowManager
 
 st.set_page_config(
@@ -24,6 +24,125 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ============================================
+# LOGIN PAGE
+# ============================================
+
+def render_login_page():
+    """Render login page - only users added via RBAC Management can log in."""
+    st.markdown("""
+        <style>
+        [data-testid="stSidebar"] { display: none; }
+        .login-container {
+            max-width: 400px;
+            margin: 80px auto;
+            padding: 40px;
+            border-radius: 12px;
+            border: 1px solid #E5E7EB;
+            background: white;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+        }
+        .login-header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+        .login-header h1 {
+            font-size: 24px;
+            font-weight: 700;
+            color: #111827;
+            margin: 0;
+        }
+        .login-header p {
+            font-size: 13px;
+            color: #6B7280;
+            margin-top: 8px;
+        }
+        .login-brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        st.markdown("""
+            <div class="login-container">
+                <div class="login-header">
+                    <div class="login-brand">
+                        <div style="background:#CC0000; width:38px; height:38px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:20px;">G</div>
+                        <span style="font-size:22px; font-weight:700; color:#111827;">GlossIQ</span>
+                    </div>
+                    <p>Sign in with your registered email</p>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        with st.form("login_form"):
+            email = st.text_input("Email", placeholder="Enter your email address")
+            password = st.text_input("Password", type="password", placeholder="Enter your password")
+            submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+
+            if submitted:
+                if not email.strip() or not password.strip():
+                    st.error("Please enter both email and password.")
+                else:
+                    # Load RBAC users and check credentials
+                    rbac_users_data, _ = load_rbac()
+                    user_record = rbac_users_data.get(email.strip().lower())
+                    if user_record and user_record.get("password") == password:
+                        st.session_state.logged_in = True
+                        st.session_state.logged_in_email = email.strip().lower()
+                        st.session_state.user_name = user_record.get("name", email.strip())
+                        st.session_state.user_role = user_record.get("role", "Reader")
+                        st.rerun()
+                    else:
+                        st.error("Invalid email or password. Only registered users can log in.")
+
+        st.markdown("<p style='text-align:center; font-size:12px; color:#9CA3AF; margin-top:16px;'>Contact your administrator to get access.</p>", unsafe_allow_html=True)
+
+        # ── Forgot Password ──────────────────────────────────────────────────
+        if "show_forgot_password" not in st.session_state:
+            st.session_state.show_forgot_password = False
+
+        if st.button("Forgot Password?", key="forgot_pwd_btn", use_container_width=True):
+            st.session_state.show_forgot_password = not st.session_state.show_forgot_password
+
+        if st.session_state.show_forgot_password:
+            st.markdown("---")
+            st.markdown("#### Reset Password")
+            with st.form("reset_password_form"):
+                reset_email = st.text_input("Registered Email", placeholder="Enter your registered email")
+                old_password = st.text_input("Current Password", type="password", placeholder="Enter your current password")
+                new_password = st.text_input("New Password", type="password", placeholder="Enter new password")
+                confirm_password = st.text_input("Confirm Password", type="password", placeholder="Re-enter new password")
+                reset_submitted = st.form_submit_button("Reset Password", type="primary", use_container_width=True)
+
+                if reset_submitted:
+                    if not reset_email.strip() or not old_password.strip() or not new_password.strip() or not confirm_password.strip():
+                        st.error("All fields are required.")
+                    elif new_password != confirm_password:
+                        st.error("Passwords do not match.")
+                    elif len(new_password) < 4:
+                        st.error("Password must be at least 4 characters.")
+                    else:
+                        rbac_users_data, rbac_roles_data = load_rbac()
+                        user_record = rbac_users_data.get(reset_email.strip().lower())
+                        if user_record:
+                            if user_record.get("password") != old_password:
+                                st.error("Current password is incorrect.")
+                            else:
+                                rbac_users_data[reset_email.strip().lower()]["password"] = new_password
+                                save_rbac(rbac_users_data, rbac_roles_data)
+                                st.success("✅ Password updated successfully! You can now sign in with your new password.")
+                                st.session_state.show_forgot_password = False
+                        else:
+                            st.error("Email not found. Only registered users can reset their password.")
+
 
 # ============================================
 # CONSTANTS & ASSETS
@@ -65,6 +184,10 @@ if 'glossary_suggestions' not in st.session_state:
     st.session_state.glossary_suggestions = []
 if 'is_authenticated' not in st.session_state:
     st.session_state.is_authenticated = False
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'logged_in_email' not in st.session_state:
+    st.session_state.logged_in_email = ""
 if 'purview_collections' not in st.session_state:
     st.session_state.purview_collections = []
 if 'selected_tab' not in st.session_state:
@@ -84,21 +207,17 @@ if 'connector_statuses' not in st.session_state:
         'Oracle': 'Not Connected'
     }
 if 'user_role' not in st.session_state:
-    st.session_state.user_role = "Administrator"
+    st.session_state.user_role = "Reader"
 if 'user_name' not in st.session_state:
-    st.session_state.user_name = "Jeevika P."
+    st.session_state.user_name = ""
 if 'uc_search_results' not in st.session_state:
     st.session_state.uc_search_results = []
 
 # ── RBAC: Role-Based Access Control configuration ─────────────────────────
-if 'rbac_users' not in st.session_state:
-    st.session_state.rbac_users = {
-        "Jeevika P.": {"role": "Administrator", "can_read": True, "can_approve": True, "can_reject": True, "can_suggest": True, "can_edit_glossary": True},
-    }
-if 'rbac_roles' not in st.session_state:
-    st.session_state.rbac_roles = {
-        "Administrator": {"can_read": True, "can_approve": True, "can_reject": True, "can_suggest": True, "can_edit_glossary": True, "can_manage_rbac": True},
-    }
+if 'rbac_users' not in st.session_state or 'rbac_roles' not in st.session_state:
+    _persisted_users, _persisted_roles = load_rbac()
+    st.session_state.rbac_users = _persisted_users
+    st.session_state.rbac_roles = _persisted_roles
 # Migration: ensure can_read exists in all roles and users (added after initial release)
 for _r in st.session_state.rbac_roles.values():
     if "can_read" not in _r:
@@ -296,24 +415,36 @@ def render_sidebar():
         )
         _available_demo_roles = list(st.session_state.rbac_roles.keys())
         _current_role_idx = _available_demo_roles.index(st.session_state.user_role) if st.session_state.user_role in _available_demo_roles else 0
+        _is_admin = st.session_state.user_role == "Administrator"
         new_role = st.selectbox(
             "Switch Role (Demo)", 
             _available_demo_roles, 
-            index=_current_role_idx
+            index=_current_role_idx,
+            disabled=not _is_admin
         )
-        if new_role != st.session_state.user_role:
+        if _is_admin and new_role != st.session_state.user_role:
             st.session_state.user_role = new_role
+            st.session_state.logged_in = False
+            st.session_state.logged_in_email = ""
             st.rerun()
+
+        # Generate initials from the logged-in user's name
+        _uname = st.session_state.user_name or ""
+        _initials = "".join([part[0].upper() for part in _uname.split() if part][:2]) if _uname else "?"
 
         st.markdown(f'''
             <div style="position:fixed; bottom:0; left:0; width:260px; background:white; border-top:1px solid #F3F4F6; padding:16px 24px; display:flex; align-items:center; gap:12px;">
-                <div style="width:36px; height:36px; border-radius:50%; background:#CC0000; color:white; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px;">JP</div>
+                <div style="width:36px; height:36px; border-radius:50%; background:#CC0000; color:white; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px;">{_initials}</div>
                 <div>
                     <div style="font-size:13px; font-weight:600; color:#111827;">{st.session_state.user_name}</div>
                     <div style="font-size:11px; color:#6B7280;">{st.session_state.user_role}</div>
                 </div>
             </div>
         ''', unsafe_allow_html=True)
+        if st.button("🚪 Logout", key="logout_btn", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.logged_in_email = ""
+            st.rerun()
 
 def render_dashboard_header(view_name):
     st.markdown(f'''
@@ -576,6 +707,10 @@ def render_review_tab():
             "terms and they will appear here automatically."
         )
 
+        _suggest_perms = get_current_user_permissions()
+        if not _suggest_perms.get("can_suggest", False):
+            st.info("🔒 You have **read-only** access. Suggesting terms requires elevated permissions.")
+
         with st.form("create_suggestion_form", clear_on_submit=True):
             f_col1, f_col2 = st.columns([2, 1])
             with f_col1:
@@ -592,9 +727,11 @@ def render_review_tab():
                 )
                 f_score = st.slider("Confidence Score", 0, 100, 80)
 
-            submitted = st.form_submit_button("Add to Approval Queue", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("Add to Approval Queue", type="primary", use_container_width=True, disabled=not _suggest_perms.get("can_suggest", False))
             if submitted:
-                if not f_term.strip() or not f_def.strip():
+                if not _suggest_perms.get("can_suggest", False):
+                    st.error("🔒 You do not have permission to suggest terms.")
+                elif not f_term.strip() or not f_def.strip():
                     st.error("Business Term and Definition are required.")
                 else:
                     queue_before = WorkflowManager.load_approval_queue()
@@ -860,7 +997,8 @@ def render_review_tab():
                                 with bm:
                                     if st.button("🔀 Merge", key=f"merge_{term_id}",
                                                  use_container_width=True, type="primary",
-                                                 help="Term already approved — merge to create new version"):
+                                                 disabled=not _can_approve,
+                                                 help="🔒 No permission to merge" if not _can_approve else "Term already approved — merge to create new version"):
                                         ok, msg = WorkflowManager.approve_with_merge(
                                             term_id,
                                             approver_comment=st.session_state.get(f"comment_{term_id}", ""),
@@ -896,7 +1034,8 @@ def render_review_tab():
                                 with bm:
                                     if st.button("🔀", key=f"merge_{term_id}",
                                                  use_container_width=True,
-                                                 help="Merge with existing approved term"):
+                                                 disabled=not _can_approve,
+                                                 help="🔒 No permission to merge" if not _can_approve else "Merge with existing approved term"):
                                         ok, msg = WorkflowManager.approve_with_merge(
                                             term_id,
                                             approver_comment=st.session_state.get(f"comment_{term_id}", ""),
@@ -947,10 +1086,10 @@ def render_review_tab():
                                             st.caption("⚠️ Conflict Found" if entry.get("conflict_found")
                                                        else "✅ No Conflict")
                                         st.divider()
-                                        merge_disabled = not entry.get("conflict_found", False)
+                                        merge_disabled = not entry.get("conflict_found", False) or not _can_approve
                                         if st.button("🔀 Merge", key=f"merge_{term_id}",
                                                      use_container_width=True, disabled=merge_disabled,
-                                                     help="Only when conflict detected"):
+                                                     help="🔒 No permission to merge" if not _can_approve else "Only when conflict detected"):
                                             ok, msg = WorkflowManager.approve_with_merge(
                                                 term_id,
                                                 approver_comment=st.session_state.get(f"comment_{term_id}", ""),
@@ -1732,7 +1871,9 @@ def render_glossary_tab():
         st.markdown(f"**Currently Processing Assets: {', '.join(selected_asset_names)}**")
 
         # New AI Suggestion button in this tab
-        if st.button("AI Suggestion", type="primary"):
+        _ai_perms = get_current_user_permissions()
+        _can_suggest = _ai_perms.get("can_suggest", False)
+        if st.button("AI Suggestion", type="primary", disabled=not _can_suggest, help="🔒 No permission to generate suggestions" if not _can_suggest else None):
                 # Generate all recommendations via Gemini
                 all_s = []
                 industry = st.session_state.get('industry', 'General')
@@ -1890,7 +2031,7 @@ def render_glossary_tab():
             setTimeout(styleApprovalBtn, 500);
         </script>
         """, height=0)
-        if st.button("Send to Approval Queue", use_container_width=False, help="Route selected AI terms through the Review & Approval workflow before publishing to the Glossary Hub"):
+        if st.button("Send to Approval Queue", use_container_width=False, disabled=not _can_suggest, help="🔒 No permission" if not _can_suggest else "Route selected AI terms through the Review & Approval workflow before publishing to the Glossary Hub"):
             selected_df = st.session_state.glossary_df[st.session_state.glossary_df['Select'] == True]
             if selected_df.empty:
                 st.warning("Please select at least one term to send to the Approval Queue.")
@@ -2979,47 +3120,59 @@ def render_rbac_tab():
         rbac_users = st.session_state.rbac_users
         rbac_roles = st.session_state.rbac_roles
 
-        for user_name, user_perms in rbac_users.items():
-            with st.expander(f"{'🟢' if user_name == st.session_state.user_name else '⚪'} {user_name}  —  {user_perms.get('role', 'Viewer')}", expanded=(user_name == st.session_state.user_name)):
-                col1, col2 = st.columns([1, 2])
+        for user_key, user_perms in list(rbac_users.items()):
+            display_name = user_perms.get("name", user_key)
+            user_email = user_perms.get("email", user_key)
+            is_current = user_email == st.session_state.get("logged_in_email", "")
+            with st.expander(f"{'🟢' if is_current else '⚪'} {display_name} ({user_email})  —  {user_perms.get('role', 'Reader')}", expanded=is_current):
+                col1, col2, col_del = st.columns([1, 2, 0.3])
                 with col1:
                     available_roles = list(rbac_roles.keys())
-                    current_role_idx = available_roles.index(user_perms.get("role", "Viewer")) if user_perms.get("role", "Viewer") in available_roles else 0
+                    current_role_idx = available_roles.index(user_perms.get("role", "Reader")) if user_perms.get("role", "Reader") in available_roles else 0
                     new_role = st.selectbox(
                         "Role",
                         available_roles,
                         index=current_role_idx,
-                        key=f"rbac_role_{user_name}",
+                        key=f"rbac_role_{user_key}",
                     )
                     if new_role != user_perms.get("role"):
                         # Auto-apply role defaults
                         role_defaults = rbac_roles.get(new_role, {})
-                        st.session_state.rbac_users[user_name]["role"] = new_role
-                        st.session_state.rbac_users[user_name]["can_approve"] = role_defaults.get("can_approve", False)
-                        st.session_state.rbac_users[user_name]["can_reject"] = role_defaults.get("can_reject", False)
-                        st.session_state.rbac_users[user_name]["can_suggest"] = role_defaults.get("can_suggest", False)
-                        st.session_state.rbac_users[user_name]["can_edit_glossary"] = role_defaults.get("can_edit_glossary", False)
+                        st.session_state.rbac_users[user_key]["role"] = new_role
+                        st.session_state.rbac_users[user_key]["can_approve"] = role_defaults.get("can_approve", False)
+                        st.session_state.rbac_users[user_key]["can_reject"] = role_defaults.get("can_reject", False)
+                        st.session_state.rbac_users[user_key]["can_suggest"] = role_defaults.get("can_suggest", False)
+                        st.session_state.rbac_users[user_key]["can_edit_glossary"] = role_defaults.get("can_edit_glossary", False)
+                        save_rbac(st.session_state.rbac_users, st.session_state.rbac_roles)
                         st.rerun()
                 with col2:
                     st.markdown("**Permissions Override:**")
                     p_col0, p_col1, p_col2, p_col3, p_col4 = st.columns(5)
                     with p_col0:
-                        read = st.checkbox("Read", value=user_perms.get("can_read", False), key=f"rbac_read_{user_name}")
+                        read = st.checkbox("Read", value=user_perms.get("can_read", False), key=f"rbac_read_{user_key}")
                     with p_col1:
-                        approve = st.checkbox("Approve", value=user_perms.get("can_approve", False), key=f"rbac_approve_{user_name}")
+                        approve = st.checkbox("Approve", value=user_perms.get("can_approve", False), key=f"rbac_approve_{user_key}")
                     with p_col2:
-                        reject = st.checkbox("Reject", value=user_perms.get("can_reject", False), key=f"rbac_reject_{user_name}")
+                        reject = st.checkbox("Reject", value=user_perms.get("can_reject", False), key=f"rbac_reject_{user_key}")
                     with p_col3:
-                        suggest = st.checkbox("Suggest", value=user_perms.get("can_suggest", False), key=f"rbac_suggest_{user_name}")
+                        suggest = st.checkbox("Suggest", value=user_perms.get("can_suggest", False), key=f"rbac_suggest_{user_key}")
                     with p_col4:
-                        edit_gl = st.checkbox("Edit Glossary", value=user_perms.get("can_edit_glossary", False), key=f"rbac_edit_{user_name}")
+                        edit_gl = st.checkbox("Edit Glossary", value=user_perms.get("can_edit_glossary", False), key=f"rbac_edit_{user_key}")
 
                     # Persist changes
-                    st.session_state.rbac_users[user_name]["can_read"] = read
-                    st.session_state.rbac_users[user_name]["can_approve"] = approve
-                    st.session_state.rbac_users[user_name]["can_reject"] = reject
-                    st.session_state.rbac_users[user_name]["can_suggest"] = suggest
-                    st.session_state.rbac_users[user_name]["can_edit_glossary"] = edit_gl
+                    st.session_state.rbac_users[user_key]["can_read"] = read
+                    st.session_state.rbac_users[user_key]["can_approve"] = approve
+                    st.session_state.rbac_users[user_key]["can_reject"] = reject
+                    st.session_state.rbac_users[user_key]["can_suggest"] = suggest
+                    st.session_state.rbac_users[user_key]["can_edit_glossary"] = edit_gl
+                    save_rbac(st.session_state.rbac_users, st.session_state.rbac_roles)
+                with col_del:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if not is_current:
+                        if st.button("🗑️", key=f"rbac_del_{user_key}", help=f"Delete user {display_name}"):
+                            del st.session_state.rbac_users[user_key]
+                            save_rbac(st.session_state.rbac_users, st.session_state.rbac_roles)
+                            st.rerun()
 
     # ── Tab 2: Roles ─────────────────────────────────────────────────────────
     with rbac_tab2:
@@ -3071,24 +3224,35 @@ def render_rbac_tab():
                         "can_edit_glossary": nr_edit,
                         "can_manage_rbac": nr_manage,
                     }
+                    save_rbac(st.session_state.rbac_users, st.session_state.rbac_roles)
                     st.success(f"✅ Role '{new_role_name.strip()}' created.")
                     st.rerun()
 
     # ── Tab 3: Add User ──────────────────────────────────────────────────────
     with rbac_tab3:
         st.markdown("#### Add New User")
+        st.caption("Add a user by their email address. Default password is `user321`. The user can log in with this email and password.")
         with st.form("add_user_form", clear_on_submit=True):
-            new_user_name = st.text_input("User Name", placeholder="e.g. John D.")
+            new_user_email = st.text_input("Email ID", placeholder="e.g. john@company.com")
+            new_user_display_name = st.text_input("Display Name", placeholder="e.g. John D.")
             _existing_roles = list(st.session_state.rbac_roles.keys())
-            new_user_role = st.selectbox("Assign Role", _existing_roles)
+            _default_role_idx = _existing_roles.index("Reader") if "Reader" in _existing_roles else 0
+            new_user_role = st.selectbox("Assign Role", _existing_roles, index=_default_role_idx)
             if st.form_submit_button("Add User", type="primary"):
-                if not new_user_name.strip():
-                    st.error("User name is required.")
-                elif new_user_name.strip() in st.session_state.rbac_users:
-                    st.warning(f"User '{new_user_name}' already exists.")
+                if not new_user_email.strip():
+                    st.error("Email ID is required.")
+                elif "@" not in new_user_email:
+                    st.error("Please enter a valid email address.")
+                elif new_user_email.strip().lower() in st.session_state.rbac_users:
+                    st.warning(f"User '{new_user_email}' already exists.")
                 else:
                     role_defaults = st.session_state.rbac_roles.get(new_user_role, {})
-                    st.session_state.rbac_users[new_user_name.strip()] = {
+                    email_key = new_user_email.strip().lower()
+                    display_name = new_user_display_name.strip() if new_user_display_name.strip() else email_key
+                    st.session_state.rbac_users[email_key] = {
+                        "name": display_name,
+                        "email": email_key,
+                        "password": "user321",
                         "role": new_user_role,
                         "can_read": role_defaults.get("can_read", True),
                         "can_approve": role_defaults.get("can_approve", False),
@@ -3096,11 +3260,17 @@ def render_rbac_tab():
                         "can_suggest": role_defaults.get("can_suggest", False),
                         "can_edit_glossary": role_defaults.get("can_edit_glossary", False),
                     }
-                    st.success(f"✅ User '{new_user_name.strip()}' added with role '{new_user_role}'.")
+                    save_rbac(st.session_state.rbac_users, st.session_state.rbac_roles)
+                    st.success(f"✅ User '{display_name}' ({email_key}) added with role '{new_user_role}'. Default password: `user321`")
                     st.rerun()
 
 
 def main():
+    # Gate the entire app behind login
+    if not st.session_state.get('logged_in', False):
+        render_login_page()
+        return
+
     load_css('style.css')
     render_sidebar()
     tab = st.session_state.get('selected_tab', "Executive Dashboard")

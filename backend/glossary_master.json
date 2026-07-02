@@ -38,7 +38,7 @@
             "Type": "Column",
             "Source": "AI Suggester",
             "Confidence (%)": 95,
-            "Active": 1,
+            "Active": 0,
             "Version": 1,
             "Stored At": "2026-04-29T14:40:27.226970"
         },
@@ -55,6 +55,20 @@
             "Active": 1,
             "Version": 2,
             "Stored At": "2026-04-29T15:01:15.689914"
+        },
+        {
+            "entity_guid": "fa41238f-752d-4cda-b97f-9bf92b9698a7",
+            "table_guid": "workflow_PATIENT_ADDRESS",
+            "table_name": "PATIENT_ADDRESS",
+            "Business Term": "Street Address Information",
+            "Physical Term": "ADDRESS_LINE",
+            "Definition / Description": "The portion of the patient's address providing detailed street, building, apartment, or house information essential for postal delivery.",
+            "Type": "Column",
+            "Source": "AI Suggester",
+            "Confidence (%)": 85,
+            "Active": 1,
+            "Version": 2,
+            "Stored At": "2026-05-31T14:18:17.237616"
         }
     ],
     "workflow_patient_address": [

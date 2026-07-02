@@ -1,0 +1,63 @@
+{
+    "users": {
+        "admin@glossiq.com": {
+            "name": "Jeevika P.",
+            "email": "admin@glossiq.com",
+            "password": "user321",
+            "role": "Administrator",
+            "can_read": true,
+            "can_approve": true,
+            "can_reject": true,
+            "can_suggest": true,
+            "can_edit_glossary": true
+        },
+        "gyan.pathak@ilink-systems.com": {
+            "name": "Gyan Pathak",
+            "email": "gyan.pathak@ilink-systems.com",
+            "password": "user321",
+            "role": "Reader",
+            "can_read": true,
+            "can_approve": false,
+            "can_reject": false,
+            "can_suggest": false,
+            "can_edit_glossary": false
+        },
+        "jhagan.a@ilink-systems.com": {
+            "name": "Jhagan A",
+            "email": "jhagan.a@ilink-systems.com",
+            "password": "user321",
+            "role": "Developer",
+            "can_read": true,
+            "can_approve": false,
+            "can_reject": false,
+            "can_suggest": true,
+            "can_edit_glossary": true
+        }
+    },
+    "roles": {
+        "Administrator": {
+            "can_read": true,
+            "can_approve": true,
+            "can_reject": true,
+            "can_suggest": true,
+            "can_edit_glossary": true,
+            "can_manage_rbac": true
+        },
+        "Reader": {
+            "can_read": true,
+            "can_approve": false,
+            "can_reject": false,
+            "can_suggest": false,
+            "can_edit_glossary": false,
+            "can_manage_rbac": false
+        },
+        "Developer": {
+            "can_read": true,
+            "can_approve": false,
+            "can_reject": false,
+            "can_suggest": true,
+            "can_edit_glossary": true,
+            "can_manage_rbac": false
+        }
+    }
+}

@@ -53,5 +53,49 @@
         "table_name": "patient_address",
         "term_type": "Column",
         "physical_term": "PHONE_NUMBER"
+    },
+    {
+        "term_id": "8c857607-71ef-4dc6-ac28-b617ed2361a6",
+        "term_name": "Patient Residential Location Record",
+        "definition": "A structured listing of the geographic and postal details associated with individual patients, used to record their usual place of residence.",
+        "source": "AI Suggester",
+        "confidence_score": 90,
+        "created_date": "2026-07-01T22:06:49.967710",
+        "table_name": "PATIENT_ADDRESS",
+        "term_type": "Table",
+        "physical_term": "PATIENT_ADDRESS"
+    },
+    {
+        "term_id": "219b6307-8cdf-4afa-a204-5e59eba3d15a",
+        "term_name": "Patient Primary Identifier",
+        "definition": "A unique value assigned to each patient for the purpose of unequivocal identification within the system.",
+        "source": "AI Suggester",
+        "confidence_score": 95,
+        "created_date": "2026-07-01T22:06:50.001229",
+        "table_name": "PATIENT_ADDRESS",
+        "term_type": "Column",
+        "physical_term": "PATIENT_ID"
+    },
+    {
+        "term_id": "ce83d4d3-3eb6-4919-91f8-390af9fd188b",
+        "term_name": "Patient Master Record",
+        "definition": "A comprehensive repository containing unique records and demographic attributes of individuals receiving services.",
+        "source": "AI Suggester",
+        "confidence_score": 95,
+        "created_date": "2026-07-01T22:06:50.011774",
+        "table_name": "PATIENT_MASTER",
+        "term_type": "Table",
+        "physical_term": "PATIENT_MASTER"
+    },
+    {
+        "term_id": "edbdabf0-b180-4188-9bbe-d5911d24c1cf",
+        "term_name": "Personal Given Name",
+        "definition": "The first or given name of the individual, used to personally address or identify them.",
+        "source": "AI Suggester",
+        "confidence_score": 88,
+        "created_date": "2026-07-01T22:06:50.029929",
+        "table_name": "PATIENT_MASTER",
+        "term_type": "Column",
+        "physical_term": "FIRST_NAME"
     }
 ]
