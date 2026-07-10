@@ -17,6 +17,7 @@ from backend.internal_governance import generate_internal_governance
 from backend.governance_engine import GovernanceEngine
 from backend.persistence_manager import PersistenceManager, load_rbac, save_rbac
 from backend.workflow_manager import WorkflowManager
+from backend.semantic_search import semantic_search_glossary, keyword_search_glossary
 
 st.set_page_config(
     page_title="Glossary Enricher Accelerator",
@@ -388,6 +389,16 @@ def render_sidebar():
             on_click=set_nav_tab, 
             args=("Glossary Hub",),
             type="primary" if current_tab == "Glossary Hub" else "secondary"
+        )
+
+        st.button(
+            "Semantic Search", 
+            key="nav_Semantic Search", 
+            icon=":material/travel_explore:", 
+            use_container_width=True, 
+            on_click=set_nav_tab, 
+            args=("Semantic Search",),
+            type="primary" if current_tab == "Semantic Search" else "secondary"
         )
 
         st.button(
@@ -1649,14 +1660,27 @@ def render_search_tab():
             st.markdown("### Search Results")
             results_df = pd.DataFrame(st.session_state.purview_search_results)
             saved_ids = st.session_state.perm_cache.get('selected_table_ids', [])
-            results_df['Select'] = results_df['qualifiedName'].apply(lambda x: x in saved_ids)
-            edited_df = st.data_editor(
-                results_df[['Select', 'name', 'entityType', 'collectionId', 'qualifiedName']],
-                key="search_results_editor",
-                hide_index=True,
-                use_container_width=True,
-            )
-            current_selected = edited_df[edited_df['Select'] == True]['qualifiedName'].tolist()
+
+            # Use individual checkboxes for clear single-click selection
+            current_selected = []
+            for idx, row in results_df.iterrows():
+                qname = row.get('qualifiedName', '')
+                col_cb, col_name, col_type, col_coll = st.columns([0.5, 3, 2, 2])
+                with col_cb:
+                    checked = st.checkbox(
+                        "sel", value=(qname in saved_ids),
+                        key=f"search_sel_{idx}",
+                        label_visibility="collapsed"
+                    )
+                with col_name:
+                    st.markdown(f"**{row.get('name', '')}**")
+                with col_type:
+                    st.caption(row.get('entityType', ''))
+                with col_coll:
+                    st.caption(row.get('collectionId', ''))
+                if checked:
+                    current_selected.append(qname)
+
             st.session_state.perm_cache['selected_table_ids'] = current_selected
             selected_tables = [item for item in st.session_state.purview_search_results if item.get('qualifiedName') in current_selected]
 
@@ -2204,7 +2228,7 @@ def render_master_glossary_tab():
         # ── Records Status filter ──────────────────────────────────────────────
         with st.expander("Record Status", expanded=False):
             record_status = st.radio(
-                "Select status", ["All", "Active", "Non-Active"],
+                "Select status", ["Active", "All", "Non-Active"],
                 key="hub_status_filter", label_visibility="collapsed"
             )
 
@@ -2220,19 +2244,29 @@ def render_master_glossary_tab():
                 asset_to_view = st.selectbox("Select Table/Asset to View", all_asset_names, key="hub_asset_select", label_visibility="collapsed")
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # RIGHT PANEL — Main Content Area
+    # RIGHT PANEL — Main Content Area (Trending UI)
     # ═══════════════════════════════════════════════════════════════════════════
     with col_main:
-        # ── Toolbar row ──────────────────────────────────────────────────────
-        tb_left, tb_right = st.columns([3, 1])
-        with tb_left:
-            pass # The header is shown below
-        with tb_right:
-            edit_mode = st.toggle("✏️ Edit Mode", key="hub_edit_mode", value=False)
-            if edit_mode:
-                st.caption("Edits update the active record.")
+        # ── Glassmorphism Header ─────────────────────────────────────────────
+        st.markdown(
+            f'<div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:14px;padding:20px 24px;margin-bottom:18px;color:#fff;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<div>'
+            f'<div style="font-size:18px;font-weight:700;letter-spacing:-0.02em;">📋 {_html.escape(asset_to_view) if asset_to_view else "Select a table"}</div>'
+            f'<div style="font-size:12px;opacity:0.85;margin-top:4px;">Enterprise glossary — versioned & governed</div>'
+            f'</div>'
+            f'<div style="background:rgba(255,255,255,0.15);backdrop-filter:blur(4px);border-radius:8px;padding:6px 14px;font-size:11px;font-weight:600;">'
+            f'Active: {record_status}</div>'
+            f'</div></div>',
+            unsafe_allow_html=True
+        )
 
-        st.markdown("<hr style='margin:10px 0 18px 0; border-color:#E5E7EB;'>", unsafe_allow_html=True)
+        # ── View toggle + Edit ───────────────────────────────────────────────
+        tb_mid, tb_right = st.columns([3, 1])
+        with tb_mid:
+            view_mode = st.radio("View", ["Cards", "Table"], horizontal=True, key="hub_view_mode", label_visibility="collapsed")
+        with tb_right:
+            edit_mode = st.toggle("✏️ Edit", key="hub_edit_mode", value=False)
 
         # ── Data Display ──────────────────────────────────────────────────────
         if asset_to_view:
@@ -2264,29 +2298,12 @@ def render_master_glossary_tab():
                 # Active records first
                 df_hist = df_hist.sort_values("Active", ascending=False).reset_index(drop=True)
 
-                HIDDEN_COLS = {
-                    "Select": None, "Status": None, "version": None,
-                    "is_active": None, "timestamp": None, "data": None,
-                    "table_guid": None, "entity_guid": None,
-                    "table_name": None, "related_column": None, "Confidence (%)": None
-                }
-                
-                # Reorder columns: Active, Version, then required columns in order, Stored At last
-                priority_cols = ["Active", "Version"]
-                desired_order = ["Type", "Physical Term", "Business Term", "Description", "Source", "Stored At"]
-
-                # Normalise column names first
+                # Normalise column names
                 df_hist = df_hist.rename(columns={
                     "Original Name":           "Physical Term",
                     "Definition / Description": "Description",
                     "Glossary Term":            "Business Term",
                 })
-
-                # Keep only columns that actually exist in the df
-                middle_cols = [c for c in desired_order if c in df_hist.columns and c not in priority_cols]
-                extra_cols  = [c for c in df_hist.columns
-                               if c not in priority_cols and c not in middle_cols and c not in HIDDEN_COLS]
-                df_hist = df_hist[priority_cols + middle_cols + extra_cols]
 
                 active_count = (df_hist["Active"] == 1).sum()
                 total_count  = len(df_hist)
@@ -2294,41 +2311,135 @@ def render_master_glossary_tab():
                 # Remove trailing empty / all-NaN rows
                 df_hist = df_hist.dropna(how="all").reset_index(drop=True)
 
-                # Status badges
-                badge_row = st.columns([2, 2, 4])
-                with badge_row[0]:
-                    st.markdown(f"<span class='hub-badge hub-badge-active'>✓ {active_count} Active</span>", unsafe_allow_html=True)
-                with badge_row[1]:
-                    st.markdown(f"<span class='hub-badge hub-badge-total'>⏱ {total_count} Total</span>", unsafe_allow_html=True)
+                # ── Bento Grid Metrics ────────────────────────────────────────
+                m1, m2, m3, m4 = st.columns(4)
+                with m1:
+                    st.markdown(
+                        f'<div style="background:linear-gradient(145deg,#10B981 0%,#059669 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(16,185,129,0.25);">'
+                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{active_count}</div>'
+                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Active</div></div>',
+                        unsafe_allow_html=True
+                    )
+                with m2:
+                    st.markdown(
+                        f'<div style="background:linear-gradient(145deg,#3B82F6 0%,#2563EB 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(59,130,246,0.25);">'
+                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{total_count}</div>'
+                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Total</div></div>',
+                        unsafe_allow_html=True
+                    )
+                with m3:
+                    versions_max = df_hist["Version"].max() if "Version" in df_hist.columns else 1
+                    st.markdown(
+                        f'<div style="background:linear-gradient(145deg,#F59E0B 0%,#D97706 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(245,158,11,0.25);">'
+                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{versions_max}</div>'
+                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Versions</div></div>',
+                        unsafe_allow_html=True
+                    )
+                with m4:
+                    sources = df_hist["Source"].nunique() if "Source" in df_hist.columns else 0
+                    st.markdown(
+                        f'<div style="background:linear-gradient(145deg,#8B5CF6 0%,#7C3AED 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(139,92,246,0.25);">'
+                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{sources}</div>'
+                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Sources</div></div>',
+                        unsafe_allow_html=True
+                    )
 
-                st.markdown(f"#### Version History — {asset_to_view}")
-                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
-                col_config = {
-                    "Active":        st.column_config.NumberColumn("Active",   help="1 = Current, 0 = Historical", width="small"),
-                    "Version":       st.column_config.NumberColumn("Version",  width="small"),
-                    "Type":          st.column_config.TextColumn("Type",       width="small"),
-                    "Physical Term": st.column_config.TextColumn("Physical Term"),
-                    "Business Term": st.column_config.TextColumn("Business Term"),
-                    "Description":   st.column_config.TextColumn("Description"),
-                    "Source":        st.column_config.TextColumn("Source",     width="small"),
-                    "Stored At":     st.column_config.TextColumn("Last Updated"),
-                    **HIDDEN_COLS
-                }
+                if view_mode == "Cards":
+                    # ── Trending Card View (Neumorphic) ───────────────────────
+                    for idx, row in df_hist.iterrows():
+                        is_active = row.get("Active") == 1
+                        typ = row.get("Type", "Column")
+                        phys = row.get("Physical Term", "")
+                        biz = row.get("Business Term", "")
+                        desc = row.get("Description", "")
+                        src = row.get("Source", "")
+                        stored = str(row.get("Stored At", ""))[:10]
+                        ver = row.get("Version", 1)
 
-                st.data_editor(
-                    df_hist,
-                    key=f"hub_view_{selected_guid}",
-                    hide_index=True,
-                    use_container_width=True,
-                    disabled=(not edit_mode),
-                    num_rows="fixed",
-                    column_config=col_config
-                )
+                        # Dynamic accent colors
+                        if is_active and typ == "Table":
+                            accent = "#6366F1"
+                            accent_bg = "rgba(99,102,241,0.08)"
+                            dot_color = "#6366F1"
+                        elif is_active:
+                            accent = "#10B981"
+                            accent_bg = "rgba(16,185,129,0.06)"
+                            dot_color = "#10B981"
+                        else:
+                            accent = "#9CA3AF"
+                            accent_bg = "rgba(156,163,175,0.06)"
+                            dot_color = "#9CA3AF"
 
-                st.markdown("<br>", unsafe_allow_html=True)
+                        badge_html = (
+                            f'<span style="background:linear-gradient(135deg,#10B981,#059669);color:#fff;font-size:9px;padding:3px 10px;border-radius:20px;font-weight:700;letter-spacing:0.05em;box-shadow:0 2px 6px rgba(16,185,129,0.3);">● ACTIVE</span>'
+                            if is_active else
+                            f'<span style="background:#F1F5F9;color:#64748B;font-size:9px;padding:3px 10px;border-radius:20px;font-weight:600;">v{ver}</span>'
+                        )
 
-                # ── Register / Push — only show button for connected integration ──
+                        st.markdown(
+                            f'<div style="border:1px solid {"#E2E8F0" if not is_active else "transparent"};border-radius:14px;padding:18px 22px;margin-bottom:12px;'
+                            f'background:{accent_bg};{"border-left:3px solid " + accent + ";" if is_active else ""}'
+                            f'box-shadow:0 1px 4px rgba(0,0,0,0.03);transition:all 0.2s;">'
+                            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'
+                            f'<div style="display:flex;align-items:center;gap:10px;">'
+                            f'<div style="width:8px;height:8px;border-radius:50%;background:{dot_color};"></div>'
+                            f'<span style="font-size:14px;font-weight:700;color:#0F172A;">{_html.escape(biz)}</span>'
+                            f'{badge_html}'
+                            f'</div>'
+                            f'<span style="font-size:10px;color:#94A3B8;font-weight:500;">{stored}</span>'
+                            f'</div>'
+                            f'<div style="display:flex;gap:12px;margin-bottom:8px;flex-wrap:wrap;">'
+                            f'<span style="font-size:11px;color:#334155;background:#F1F5F9;padding:4px 12px;border-radius:8px;font-family:monospace;font-weight:500;">{_html.escape(phys)}</span>'
+                            f'<span style="font-size:11px;color:{accent};background:{accent_bg};padding:4px 12px;border-radius:8px;font-weight:600;">{_html.escape(typ)}</span>'
+                            f'<span style="font-size:11px;color:#64748B;background:#F8FAFC;padding:4px 12px;border-radius:8px;">{_html.escape(src)}</span>'
+                            f'</div>'
+                            f'<div style="font-size:12px;color:#475569;line-height:1.6;margin-top:6px;">{_html.escape(desc[:250])}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                else:
+                    # ── Table View ────────────────────────────────────────────
+                    HIDDEN_COLS = {
+                        "Select": None, "Status": None, "version": None,
+                        "is_active": None, "timestamp": None, "data": None,
+                        "table_guid": None, "entity_guid": None,
+                        "table_name": None, "related_column": None, "Confidence (%)": None
+                    }
+                    
+                    priority_cols = ["Active", "Version"]
+                    desired_order = ["Type", "Physical Term", "Business Term", "Description", "Source", "Stored At"]
+                    middle_cols = [c for c in desired_order if c in df_hist.columns and c not in priority_cols]
+                    extra_cols  = [c for c in df_hist.columns
+                                   if c not in priority_cols and c not in middle_cols and c not in HIDDEN_COLS]
+                    df_display = df_hist[priority_cols + middle_cols + extra_cols] if all(c in df_hist.columns for c in priority_cols) else df_hist
+
+                    col_config = {
+                        "Active":        st.column_config.NumberColumn("Active",   help="1 = Current, 0 = Historical", width="small"),
+                        "Version":       st.column_config.NumberColumn("Version",  width="small"),
+                        "Type":          st.column_config.TextColumn("Type",       width="small"),
+                        "Physical Term": st.column_config.TextColumn("Physical Term"),
+                        "Business Term": st.column_config.TextColumn("Business Term"),
+                        "Description":   st.column_config.TextColumn("Description"),
+                        "Source":        st.column_config.TextColumn("Source",     width="small"),
+                        "Stored At":     st.column_config.TextColumn("Last Updated"),
+                        **HIDDEN_COLS
+                    }
+
+                    st.data_editor(
+                        df_display,
+                        key=f"hub_view_{selected_guid}",
+                        hide_index=True,
+                        use_container_width=True,
+                        disabled=(not edit_mode),
+                        num_rows="fixed",
+                        column_config=col_config
+                    )
+
+                st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+
+                # ── Single Smart Register Button ─────────────────────────────────
                 can_register = st.session_state.user_role == "Administrator"
                 active_df = df_hist[df_hist["Active"] == 1]
 
@@ -2338,24 +2449,27 @@ def render_master_glossary_tab():
                 _purview_on  = _purview_cfg.get("status") == "Connected"
                 _db_on       = _db_cfg.get("status") == "Connected"
 
-                st.markdown("""
-                <style>
-                div[data-testid="stButton"] > button {
-                    background-color: #E53935 !important;
-                    color: #ffffff !important;
-                    border: none !important;
-                }
-                div[data-testid="stButton"] > button:hover {
-                    background-color: #C62828 !important;
-                    color: #ffffff !important;
-                }
-                </style>
-                """, unsafe_allow_html=True)
-
-                # ── Microsoft Purview button (only if connected) ──────────────────
+                # Determine which platform is connected
                 if _purview_on:
-                    reg_label = f"Register {len(active_df)} Active Term(s) to Purview"
-                    if st.button(reg_label, type="primary", use_container_width=True, disabled=not can_register):
+                    _platform_name = "Microsoft Purview"
+                    _platform_icon = "☁️"
+                elif _db_on:
+                    _platform_name = "Databricks Unity Catalog"
+                    _platform_icon = "🔷"
+                else:
+                    _platform_name = None
+                    _platform_icon = "🔗"
+
+                # Registration card
+                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+
+                _btn_disabled = not can_register or not _platform_name or active_df.empty
+                _btn_label = f"{_platform_icon} Register {len(active_df)} Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
+                _btn_help = "🔒 No permission" if not can_register else ("No integration connected — go to Integrations & API" if not _platform_name else f"Publish active terms to {_platform_name}")
+
+                if st.button(_btn_label, type="primary", use_container_width=True, disabled=_btn_disabled, help=_btn_help, key="hub_register_btn"):
+                    if _purview_on:
+                        # ── Purview Registration Logic ────────────────────────
                         creds = st.session_state.get("connector_creds", {})
                         account_name  = creds.get("purview_account_name", "")
                         tenant_id     = creds.get("purview_tenant_id", "")
@@ -2452,22 +2566,20 @@ def render_master_glossary_tab():
                                     if errors:
                                         st.warning(f"Registered {registered} term(s) with {len(errors)} error(s):\n" + "\n".join(f"• {e}" for e in errors))
                                     else:
-                                        st.success(f"✅ {registered} active term(s) from **{asset_to_view}** registered and assigned to Purview.")
+                                        st.success(f"✅ {registered} active term(s) from **{asset_to_view}** registered to Purview.")
 
-                # ── Databricks Unity Catalog button (only if connected) ────────────
-                if _db_on:
-                    _db_browse   = DatabricksUnityConnector(_db_cfg.get("api_endpoint", ""), _db_cfg.get("api_token", ""))
-                    _meta_entry  = st.session_state.get("tables_metadata", {}).get(selected_guid, {})
-                    uc_full_name = _meta_entry.get("qualifiedName", "")
+                    elif _db_on:
+                        # ── Databricks Unity Catalog Logic ────────────────────
+                        _db_browse   = DatabricksUnityConnector(_db_cfg.get("api_endpoint", ""), _db_cfg.get("api_token", ""))
+                        _meta_entry  = st.session_state.get("tables_metadata", {}).get(selected_guid, {})
+                        uc_full_name = _meta_entry.get("qualifiedName", "")
 
-                    _whs, _wh_err = _db_browse.list_sql_warehouses()
-                    _wh_id = ""
-                    if not _wh_err and _whs:
-                        _running = [w for w in _whs if w["state"] == "RUNNING"]
-                        _wh_id = (_running or _whs)[0]["id"]
+                        _whs, _wh_err = _db_browse.list_sql_warehouses()
+                        _wh_id = ""
+                        if not _wh_err and _whs:
+                            _running = [w for w in _whs if w["state"] == "RUNNING"]
+                            _wh_id = (_running or _whs)[0]["id"]
 
-                    uc_label = f"Push {len(active_df)} Active Term(s) to Unity Catalog"
-                    if st.button(uc_label, type="primary", use_container_width=True, disabled=(not can_register or not uc_full_name)):
                         if not uc_full_name:
                             st.warning("No table selected. Please select a table in **Asset Search** first.")
                         else:
@@ -2491,6 +2603,148 @@ def render_master_glossary_tab():
                                         st.info(f"⏭ {len(_skipped)} tag(s) already exist and were skipped: {', '.join(f'`{s}`' for s in _skipped)}")
                                     if not _applied and not _skipped:
                                         st.warning("No tags were pushed.")
+
+# ============================================
+# SEMANTIC SEARCH TAB
+# ============================================
+
+def render_semantic_search_tab():
+    render_dashboard_header("Semantic Search")
+    st.markdown('''
+        <div class="workbench-header">
+            <div class="accent-line"></div>
+            <h1 class="workbench-title">Semantic Search</h1>
+            <p class="workbench-desc">Search your glossary using natural language. Find business terms, definitions, and data assets by meaning — not just keywords.</p>
+        </div>
+    ''', unsafe_allow_html=True)
+
+    # Search input area
+    col_search, col_opts = st.columns([3, 1], gap="medium")
+
+    with col_search:
+        search_query = st.text_input(
+            "🔍 Search your glossary",
+            placeholder="e.g. 'patient contact information', 'unique identifier for a person', 'blood type'...",
+            key="semantic_search_input",
+            label_visibility="collapsed"
+        )
+
+    with col_opts:
+        search_mode = st.selectbox(
+            "Search Mode",
+            ["Semantic (AI)", "Keyword"],
+            key="semantic_search_mode",
+            label_visibility="collapsed"
+        )
+
+    # Advanced options
+    with st.expander("⚙️ Advanced Options", expanded=False):
+        adv_col1, adv_col2 = st.columns(2)
+        with adv_col1:
+            top_k = st.slider("Max Results", min_value=5, max_value=50, value=10, step=5, key="semantic_top_k")
+        with adv_col2:
+            if search_mode == "Semantic (AI)":
+                threshold = st.slider("Similarity Threshold (%)", min_value=50, max_value=95, value=70, step=5, key="semantic_threshold")
+            else:
+                threshold = 70  # not used for keyword
+
+    # Execute search
+    if search_query and search_query.strip():
+        with st.spinner("Searching glossary..." if search_mode == "Keyword" else "Performing semantic search with AI embeddings..."):
+            if search_mode == "Semantic (AI)":
+                results = semantic_search_glossary(
+                    query=search_query,
+                    top_k=top_k,
+                    similarity_threshold=threshold / 100.0
+                )
+                score_col_name = "Similarity"
+            else:
+                results = keyword_search_glossary(
+                    query=search_query,
+                    top_k=top_k
+                )
+                score_col_name = "Relevance"
+
+        if results:
+            st.markdown(f"### 📋 Results ({len(results)} matches)")
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Summary metrics
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("Matches Found", len(results))
+            with m2:
+                avg_score = sum(r.get(score_col_name, 0) for r in results) / len(results)
+                st.metric(f"Avg {score_col_name}", f"{avg_score:.1f}%")
+            with m3:
+                unique_tables = len(set(r.get("Table", "") for r in results if r.get("Table")))
+                st.metric("Tables Matched", unique_tables)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Results as expandable cards
+            for i, result in enumerate(results):
+                score = result.get(score_col_name, 0)
+                # Color-code by score
+                if score >= 90:
+                    badge_color = "#16A34A"
+                    badge_bg = "#DCFCE7"
+                elif score >= 80:
+                    badge_color = "#2563EB"
+                    badge_bg = "#DBEAFE"
+                elif score >= 70:
+                    badge_color = "#D97706"
+                    badge_bg = "#FEF3C7"
+                else:
+                    badge_color = "#6B7280"
+                    badge_bg = "#F3F4F6"
+
+                with st.expander(
+                    f"**{result.get('Business Term', 'N/A')}** — `{result.get('Physical Term', '')}` | {score_col_name}: {score}%",
+                    expanded=(i < 3)
+                ):
+                    det_col1, det_col2 = st.columns([3, 1])
+                    with det_col1:
+                        st.markdown(f"**Definition:** {result.get('Definition', 'N/A')}")
+                        st.markdown(f"**Table:** `{result.get('Table', 'N/A')}` &nbsp;|&nbsp; **Type:** {result.get('Type', 'N/A')}")
+                    with det_col2:
+                        st.markdown(
+                            f"<div style='text-align:center; padding:8px; border-radius:8px; background:{badge_bg}; color:{badge_color}; font-weight:700; font-size:18px;'>{score}%</div>"
+                            f"<div style='text-align:center; font-size:11px; color:#6B7280; margin-top:4px;'>{score_col_name}</div>",
+                            unsafe_allow_html=True
+                        )
+                    st.caption(f"Source: {result.get('Source', 'N/A')} | Confidence: {result.get('Confidence (%)', 'N/A')}%")
+
+            # Also show as a table
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.expander("📊 View as Table", expanded=False):
+                df_results = pd.DataFrame(results)
+                st.dataframe(df_results, use_container_width=True, hide_index=True)
+        else:
+            st.warning("No matching results found. Try a different query or lower the similarity threshold.")
+    else:
+        # Show example queries when no search is active
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("#### 💡 Example Queries")
+        example_cols = st.columns(3)
+        examples = [
+            ("🏥 Healthcare", "patient contact details"),
+            ("🔑 Identifiers", "unique person identifier"),
+            ("📍 Location", "residential address information"),
+        ]
+        for col, (label, example) in zip(example_cols, examples):
+            with col:
+                st.markdown(
+                    f"""<div style='padding:16px; border-radius:10px; border:1px solid #E5E7EB; background:#FAFAFA; cursor:pointer;'>
+                        <div style='font-size:13px; font-weight:600; color:#374151;'>{label}</div>
+                        <div style='font-size:12px; color:#6B7280; margin-top:4px;'>"{example}"</div>
+                    </div>""",
+                    unsafe_allow_html=True
+                )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.info("💡 **Semantic Search** uses AI embeddings to understand the _meaning_ of your query and match it against glossary definitions, business terms, and physical column names — even if the exact words don't appear in the records.")
+
 
 def render_dashboard_tab():
 
@@ -2543,8 +2797,8 @@ def render_dashboard_tab():
 
     mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
     kpi_cfg = [
-        (mc1, "TOTAL ASSETS",       str(metrics["Total Assets"]),    metrics["Total Assets"],    100,  "#378ADD", "assets indexed",                   None),
-        (mc2, "ACTIVE TERMS",       str(metrics["Active Terms"]),    metrics["Active Terms"],    200,  "#1D9E75", "in master glossary",                True),
+        (mc1, "TOTAL ASSETS",       str(metrics["Total Assets"]),    metrics["Total Assets"],    100,  "#378ADD", f"{metrics['Total Assets']} tables indexed",   None),
+        (mc2, "ACTIVE TERMS",       str(metrics["Active Terms"]),    metrics["Active Terms"],    200,  "#1D9E75", f"across {metrics['Total Assets']} table(s)",   True),
         (mc3, "TOTAL REVISIONS",    str(metrics["Total History"]),   metrics["Total History"],   200,  "#EF9F27", f"{pending_count} pending review",   False if pending_count else None),
         (mc4, "MATURITY SCORE",     f"{maturity_fill}%",             maturity_fill,              100,  "#E24B4A", "Target: 85%",                       None),
         (mc5, "REJECTED",           str(rejected_count),             rejected_count,             50,   "#888780", "from audit log",                    False if rejected_count else None),
@@ -3283,6 +3537,7 @@ def main():
     elif tab == "Asset Search": render_search_tab()
     elif tab == "Glossary AI": render_glossary_tab()
     elif tab in ("Glossary Hub", "Master Glossary"): render_master_glossary_tab()
+    elif tab == "Semantic Search": render_semantic_search_tab()
     elif tab == "RBAC Management": render_rbac_tab()
     else:
         render_dashboard_header(tab)

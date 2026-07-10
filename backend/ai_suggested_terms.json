@@ -55,47 +55,36 @@
         "physical_term": "PHONE_NUMBER"
     },
     {
-        "term_id": "8c857607-71ef-4dc6-ac28-b617ed2361a6",
-        "term_name": "Patient Residential Location Record",
-        "definition": "A structured listing of the geographic and postal details associated with individual patients, used to record their usual place of residence.",
+        "term_id": "ba84ef7a-0fd5-4169-b244-f105541b1713",
+        "term_name": "Patient Residential Location Registry",
+        "definition": "A repository of physical address locations associated with each patient, used for identification, correspondence, and logistical purposes.",
         "source": "AI Suggester",
-        "confidence_score": 90,
-        "created_date": "2026-07-01T22:06:49.967710",
+        "confidence_score": 96,
+        "created_date": "2026-07-10T10:38:20.192170",
         "table_name": "PATIENT_ADDRESS",
         "term_type": "Table",
         "physical_term": "PATIENT_ADDRESS"
     },
     {
-        "term_id": "219b6307-8cdf-4afa-a204-5e59eba3d15a",
-        "term_name": "Patient Primary Identifier",
-        "definition": "A unique value assigned to each patient for the purpose of unequivocal identification within the system.",
+        "term_id": "9b4626d9-78b9-4d4e-91f6-69471de0171c",
+        "term_name": "Patient Identity Documentation",
+        "definition": "Collection of records associating an individual patient with official identification documents and corresponding details to verify their identity.",
+        "source": "AI Suggester",
+        "confidence_score": 90,
+        "created_date": "2026-07-10T10:38:20.227442",
+        "table_name": "PATIENT_ID_PROOF",
+        "term_type": "Table",
+        "physical_term": "PATIENT_ID_PROOF"
+    },
+    {
+        "term_id": "bad2843d-4bd0-4744-a02b-94e0df0756ae",
+        "term_name": "Primary Patient Identifier",
+        "definition": "Unique system-generated value assigned to each patient to distinctly reference them across business processes and documentation.",
         "source": "AI Suggester",
         "confidence_score": 95,
-        "created_date": "2026-07-01T22:06:50.001229",
-        "table_name": "PATIENT_ADDRESS",
+        "created_date": "2026-07-10T10:38:20.265242",
+        "table_name": "PATIENT_ID_PROOF",
         "term_type": "Column",
         "physical_term": "PATIENT_ID"
-    },
-    {
-        "term_id": "ce83d4d3-3eb6-4919-91f8-390af9fd188b",
-        "term_name": "Patient Master Record",
-        "definition": "A comprehensive repository containing unique records and demographic attributes of individuals receiving services.",
-        "source": "AI Suggester",
-        "confidence_score": 95,
-        "created_date": "2026-07-01T22:06:50.011774",
-        "table_name": "PATIENT_MASTER",
-        "term_type": "Table",
-        "physical_term": "PATIENT_MASTER"
-    },
-    {
-        "term_id": "edbdabf0-b180-4188-9bbe-d5911d24c1cf",
-        "term_name": "Personal Given Name",
-        "definition": "The first or given name of the individual, used to personally address or identify them.",
-        "source": "AI Suggester",
-        "confidence_score": 88,
-        "created_date": "2026-07-01T22:06:50.029929",
-        "table_name": "PATIENT_MASTER",
-        "term_type": "Column",
-        "physical_term": "FIRST_NAME"
     }
 ]

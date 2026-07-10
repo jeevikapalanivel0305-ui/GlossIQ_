@@ -282,15 +282,17 @@ class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
-    def check_conflict_with_hub(cls, term_name, source_filter=None):
+    def check_conflict_with_hub(cls, term_name, source_filter=None, table_name=None, physical_term=None):
         """
         Checks if term_name already exists in the Glossary Hub (master store).
         When source_filter is set (e.g. "Databricks Unity Catalog"), only active
         records matching that Source are checked — keeps UC and Purview glossaries isolated.
 
-        Match logic:
-          - Exact term_name match (case-insensitive)
-          - Fuzzy match with similarity >= 0.85
+        Match logic (in priority order):
+          1. Same table_name + same Business Term + same Physical Term (column) → exact duplicate, merge
+          2. Same table_name + same Physical Term (column) → column already mapped
+          3. Exact term_name match (case-insensitive)
+          4. Fuzzy match with similarity >= 0.85
 
         Returns:
             (conflict_found: bool, existing_term_id: str|None,
@@ -298,14 +300,59 @@ class WorkflowManager:
         """
         master     = cls._load_master()
         term_lower = term_name.strip().lower()
+        table_lower = (table_name or "").strip().lower()
+        phys_lower = (physical_term or "").strip().lower()
 
+        # Priority 1: exact match on table_name + Business Term + Physical Term
+        if table_lower and phys_lower and term_lower:
+            for asset_guid, records in master.items():
+                for record in records:
+                    if record.get("Active") != 1:
+                        continue
+                    if source_filter and record.get("Source") != source_filter:
+                        continue
+                    r_table = (record.get("table_name") or "").strip().lower()
+                    r_biz = (record.get("Business Term") or "").strip().lower()
+                    r_phys = (record.get("Physical Term") or "").strip().lower()
+                    if r_table == table_lower and r_biz == term_lower and r_phys == phys_lower:
+                        return (
+                            True,
+                            record.get("entity_guid", asset_guid),
+                            record.get("Business Term"),
+                            "Exact Duplicate — Use Merge",
+                        )
+
+        # Priority 2: same table + same column but different/any business term
+        if table_lower and phys_lower:
+            for asset_guid, records in master.items():
+                for record in records:
+                    if record.get("Active") != 1:
+                        continue
+                    if source_filter and record.get("Source") != source_filter:
+                        continue
+                    r_table = (record.get("table_name") or "").strip().lower()
+                    r_phys = (record.get("Physical Term") or "").strip().lower()
+                    if r_table == table_lower and r_phys == phys_lower:
+                        return (
+                            True,
+                            record.get("entity_guid", asset_guid),
+                            record.get("Business Term"),
+                            "Column Already Mapped",
+                        )
+
+        # Priority 3 & 4: Exact / fuzzy name match — ONLY within the SAME table
+        # If the term is from a different table, it is NOT a conflict
         for asset_guid, records in master.items():
             for record in records:
                 if record.get("Active") != 1:
                     continue
-                # Source isolation: when scoped, skip records from other sources
                 if source_filter and record.get("Source") != source_filter:
                     continue
+                # Skip records from a different table
+                r_table = (record.get("table_name") or "").strip().lower()
+                if table_lower and r_table and r_table != table_lower:
+                    continue
+
                 for field in ["Business Term", "Physical Term", "Original Name",
                                "Glossary Term", "name"]:
                     existing = record.get(field, "")
@@ -432,7 +479,9 @@ class WorkflowManager:
         # ── Check 3: Glossary Hub (master store) — exact/fuzzy name match ────
         if not conflict_found:
             hub_conflict, hub_id, hub_name, hub_match = cls.check_conflict_with_hub(
-                term_name, source_filter=source_filter
+                term_name, source_filter=source_filter,
+                table_name=entry.get("table_name", ""),
+                physical_term=entry.get("physical_term") or entry.get("related_column") or ""
             )
             if hub_conflict:
                 conflict_found = True
