@@ -2376,6 +2376,8 @@ def render_master_glossary_tab():
                     # ── Trending Card View (Neumorphic) ───────────────────────
                     for idx, row in df_hist.iterrows():
                         is_active = row.get("Active") == 1
+                        record_status_val = row.get("Status", "Approved" if is_active else "")
+                        is_rejected = record_status_val == "Rejected"
                         typ = row.get("Type", "Column")
                         phys = row.get("Physical Term", "")
                         biz = row.get("Business Term", "")
@@ -2385,7 +2387,11 @@ def render_master_glossary_tab():
                         ver = row.get("Version", 1)
 
                         # Dynamic accent colors
-                        if is_active and typ == "Table":
+                        if is_rejected:
+                            accent = "#EF4444"
+                            accent_bg = "rgba(239,68,68,0.06)"
+                            dot_color = "#EF4444"
+                        elif is_active and typ == "Table":
                             accent = "#6366F1"
                             accent_bg = "rgba(99,102,241,0.08)"
                             dot_color = "#6366F1"
@@ -2398,11 +2404,12 @@ def render_master_glossary_tab():
                             accent_bg = "rgba(156,163,175,0.06)"
                             dot_color = "#9CA3AF"
 
-                        badge_html = (
-                            f'<span style="background:linear-gradient(135deg,#10B981,#059669);color:#fff;font-size:9px;padding:3px 10px;border-radius:20px;font-weight:700;letter-spacing:0.05em;box-shadow:0 2px 6px rgba(16,185,129,0.3);">● ACTIVE</span>'
-                            if is_active else
-                            f'<span style="background:#F1F5F9;color:#64748B;font-size:9px;padding:3px 10px;border-radius:20px;font-weight:600;">v{ver}</span>'
-                        )
+                        if is_rejected:
+                            badge_html = f'<span style="background:linear-gradient(135deg,#EF4444,#DC2626);color:#fff;font-size:9px;padding:3px 10px;border-radius:20px;font-weight:700;letter-spacing:0.05em;box-shadow:0 2px 6px rgba(239,68,68,0.3);">✕ REJECTED</span>'
+                        elif is_active:
+                            badge_html = f'<span style="background:linear-gradient(135deg,#10B981,#059669);color:#fff;font-size:9px;padding:3px 10px;border-radius:20px;font-weight:700;letter-spacing:0.05em;box-shadow:0 2px 6px rgba(16,185,129,0.3);">● ACTIVE</span>'
+                        else:
+                            badge_html = f'<span style="background:#F1F5F9;color:#64748B;font-size:9px;padding:3px 10px;border-radius:20px;font-weight:600;">v{ver}</span>'
 
                         st.markdown(
                             f'<div style="border:1px solid {"#E2E8F0" if not is_active else "transparent"};border-radius:14px;padding:18px 22px;margin-bottom:12px;'
@@ -2428,22 +2435,24 @@ def render_master_glossary_tab():
                 else:
                     # ── Table View ────────────────────────────────────────────
                     HIDDEN_COLS = {
-                        "Select": None, "Status": None, "version": None,
+                        "Select": None, "version": None,
                         "is_active": None, "timestamp": None, "data": None,
                         "table_guid": None, "entity_guid": None,
                         "table_name": None, "related_column": None, "Confidence (%)": None
                     }
                     
-                    priority_cols = ["Active", "Version"]
+                    priority_cols = ["Active", "Version", "Status"]
                     desired_order = ["Type", "Physical Term", "Business Term", "Description", "Source", "Stored At"]
                     middle_cols = [c for c in desired_order if c in df_hist.columns and c not in priority_cols]
                     extra_cols  = [c for c in df_hist.columns
                                    if c not in priority_cols and c not in middle_cols and c not in HIDDEN_COLS]
-                    df_display = df_hist[priority_cols + middle_cols + extra_cols] if all(c in df_hist.columns for c in priority_cols) else df_hist
+                    display_cols = [c for c in priority_cols if c in df_hist.columns] + middle_cols + extra_cols
+                    df_display = df_hist[display_cols] if display_cols else df_hist
 
                     col_config = {
                         "Active":        st.column_config.NumberColumn("Active",   help="1 = Current, 0 = Historical", width="small"),
                         "Version":       st.column_config.NumberColumn("Version",  width="small"),
+                        "Status":        st.column_config.TextColumn("Status",     help="Approved / Rejected", width="small"),
                         "Type":          st.column_config.TextColumn("Type",       width="small"),
                         "Physical Term": st.column_config.TextColumn("Physical Term"),
                         "Business Term": st.column_config.TextColumn("Business Term"),

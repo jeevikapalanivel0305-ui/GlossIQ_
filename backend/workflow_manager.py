@@ -139,19 +139,20 @@ class WorkflowManager:
     @classmethod
     def _rebuild_master_from_audit_log(cls):
         """
-        Rebuild glossary_master.json exclusively from audit_log.json Approved entries.
+        Rebuild glossary_master.json from audit_log.json (Approved + Rejected entries).
         The Glossary Hub is always 100% derived from the audit log — no other write path.
         Entries are processed in chronological order so SCD Type 2 versioning is correct.
+        Rejected entries are stored with Active=0 to preserve full decision history.
         """
         audit_log = cls.load_audit_log()
-        # Only Approved / Approved (Merged) entries, oldest first so versions build up correctly
-        approved = sorted(
-            [e for e in audit_log if e.get("status") in ("Approved", "Approved (Merged)")],
+        # All decided entries (Approved, Approved (Merged), Rejected), oldest first
+        decided = sorted(
+            [e for e in audit_log if e.get("status") in ("Approved", "Approved (Merged)", "Rejected")],
             key=lambda x: x.get("decision_date", ""),
         )
 
         master = {}
-        for entry in approved:
+        for entry in decided:
             raw_table  = (entry.get("table_name") or "").strip()
             safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else None
             # Normalise key to uppercase to avoid case-sensitive duplicates
@@ -163,14 +164,16 @@ class WorkflowManager:
 
             bucket = master[asset_guid]
             entry_phys = (entry.get("physical_term") or entry.get("term_name") or "").strip().lower()
+            entry_status = entry.get("status", "")
+            is_approved = entry_status in ("Approved", "Approved (Merged)")
 
             # SCD Type 2: deactivate any active record in this bucket that shares
-            # the same Physical Term (covers both same-name re-approvals AND
-            # different business terms mapped to the same physical column)
-            for r in bucket:
-                r_phys = (r.get("Physical Term") or "").strip().lower()
-                if r_phys and r_phys == entry_phys:
-                    r["Active"] = 0
+            # the same Physical Term (only when new entry is approved)
+            if is_approved:
+                for r in bucket:
+                    r_phys = (r.get("Physical Term") or "").strip().lower()
+                    if r_phys and r_phys == entry_phys:
+                        r["Active"] = 0
 
             # Version = count of all records for this physical term + 1
             same = [r for r in bucket
@@ -186,9 +189,10 @@ class WorkflowManager:
                 "Type":                     entry.get("term_type", "Column"),
                 "Source":                   entry.get("source", "Manual"),
                 "Confidence (%)":           entry.get("confidence_score", 0),
-                "Active":                   1,
+                "Active":                   1 if is_approved else 0,
                 "Version":                  next_version,
                 "Stored At":               entry.get("decision_date", datetime.now().isoformat()),
+                "Status":                   entry_status,
             })
 
         cls._save_master(master)
@@ -584,6 +588,8 @@ class WorkflowManager:
         """
         Reject a term:
           1. Updates queue status → 'Rejected'
+          2. Writes to audit log
+          3. Rebuilds Glossary Hub to include rejection history
 
         Returns: (success: bool, message: str)
         """
@@ -600,6 +606,9 @@ class WorkflowManager:
 
         # Persist to audit log
         cls._append_audit_log(entry, "Rejected", approver_comment)
+
+        # Rebuild Glossary Hub to include rejection history
+        cls._rebuild_master_from_audit_log()
 
         return True, "Term rejected"
 
