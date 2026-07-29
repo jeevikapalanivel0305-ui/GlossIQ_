@@ -2299,6 +2299,15 @@ def render_master_glossary_tab():
                 if df_hist.empty:
                     st.info("No approved records for this asset from the active connector.")
                     st.stop()
+
+                # Recalculate version numbers per Physical Term within the filtered view
+                if "Version" in df_hist.columns:
+                    _id_col = "Physical Term" if "Physical Term" in df_hist.columns else ("Original Name" if "Original Name" in df_hist.columns else None)
+                    if _id_col:
+                        df_hist = df_hist.sort_values(["Stored At"], ascending=True).reset_index(drop=True)
+                        df_hist["Version"] = df_hist.groupby(_id_col).cumcount() + 1
+                    else:
+                        df_hist["Version"] = range(1, len(df_hist) + 1)
                 
                 # Apply filters
                 if record_status == "Active":
