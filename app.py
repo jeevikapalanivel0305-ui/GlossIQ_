@@ -2113,14 +2113,25 @@ def render_master_glossary_tab():
     _all_guids = df_sum["Asset GUID"].tolist()
     _all_records = PersistenceManager.get_all_versions(_all_guids) or []
 
-    # ── Unity Catalog scope: when Databricks Unity is connected, show only UC-approved records ──
+    # ── Connector scope: filter records based on which connector is active ──
     _hub_uc_connected = st.session_state.get('integration_connectors', {}).get('Databricks Unity', {}).get('status') == 'Connected'
-    if _hub_uc_connected:
+    _hub_purview_connected = st.session_state.get('integration_connectors', {}).get('Microsoft Purview', {}).get('status') == 'Connected'
+
+    if _hub_uc_connected and not _hub_purview_connected:
         _all_records = [r for r in _all_records if r.get("Source") == "Databricks Unity Catalog"]
         _uc_guids = {r.get("table_guid") for r in _all_records if r.get("table_guid")}
         summaries = [s for s in summaries if s["Asset GUID"] in _uc_guids]
         if not summaries:
             st.info("No Unity Catalog approved records found. Generate AI suggestions from Databricks assets and approve them to see them here.")
+            return
+        df_sum = pd.DataFrame(summaries)
+        all_asset_names = df_sum["Asset Name"].tolist()
+    elif _hub_purview_connected and not _hub_uc_connected:
+        _all_records = [r for r in _all_records if r.get("Source") != "Databricks Unity Catalog"]
+        _purview_guids = {r.get("table_guid") for r in _all_records if r.get("table_guid")}
+        summaries = [s for s in summaries if s["Asset GUID"] in _purview_guids]
+        if not summaries:
+            st.info("No Purview approved records found. Generate AI suggestions from Purview assets and approve them to see them here.")
             return
         df_sum = pd.DataFrame(summaries)
         all_asset_names = df_sum["Asset Name"].tolist()

@@ -55,36 +55,80 @@
         "physical_term": "PHONE_NUMBER"
     },
     {
-        "term_id": "ba84ef7a-0fd5-4169-b244-f105541b1713",
-        "term_name": "Patient Residential Location Registry",
-        "definition": "A repository of physical address locations associated with each patient, used for identification, correspondence, and logistical purposes.",
+        "term_id": "fedb6881-36ca-4454-b03c-99f98e20bcfd",
+        "term_name": "Patient Residency Record",
+        "definition": "A data structure capturing the current or historic location information pertaining to a patient, including residential and contact address details.",
         "source": "AI Suggester",
-        "confidence_score": 96,
-        "created_date": "2026-07-10T10:38:20.192170",
+        "confidence_score": 95,
+        "created_date": "2026-07-15T10:50:56.141525",
         "table_name": "PATIENT_ADDRESS",
         "term_type": "Table",
         "physical_term": "PATIENT_ADDRESS"
     },
     {
-        "term_id": "9b4626d9-78b9-4d4e-91f6-69471de0171c",
-        "term_name": "Patient Identity Documentation",
-        "definition": "Collection of records associating an individual patient with official identification documents and corresponding details to verify their identity.",
+        "term_id": "e97977a9-cf3c-403f-9a5b-d4363ee2c1c4",
+        "term_name": "Patient Primary Identifier",
+        "definition": "A unique reference number or code assigned to an individual patient for identification across systems and records.",
+        "source": "AI Suggester",
+        "confidence_score": 95,
+        "created_date": "2026-07-15T10:50:56.160023",
+        "table_name": "PATIENT_ADDRESS",
+        "term_type": "Column",
+        "physical_term": "PATIENT_ID"
+    },
+    {
+        "term_id": "bf1dfaf0-89a5-4bb6-a802-e386ddf54337",
+        "term_name": "Residential Address Details",
+        "definition": "The primary line(s) of the patient's residential address, including street information, apartment or unit number, and other relevant details.",
         "source": "AI Suggester",
         "confidence_score": 90,
-        "created_date": "2026-07-10T10:38:20.227442",
+        "created_date": "2026-07-15T10:50:56.174013",
+        "table_name": "PATIENT_ADDRESS",
+        "term_type": "Column",
+        "physical_term": "ADDRESS_LINE"
+    },
+    {
+        "term_id": "95256402-9f75-4ea2-b396-7f4bbf5ef94b",
+        "term_name": "Patient Identity Documentation",
+        "definition": "A record of personal identification documents provided by patients, capturing key details necessary for identity verification and regulatory compliance.",
+        "source": "AI Suggester",
+        "confidence_score": 90,
+        "created_date": "2026-07-15T10:50:56.192872",
         "table_name": "PATIENT_ID_PROOF",
         "term_type": "Table",
         "physical_term": "PATIENT_ID_PROOF"
     },
     {
-        "term_id": "bad2843d-4bd0-4744-a02b-94e0df0756ae",
+        "term_id": "6b3e14f1-669b-425e-bfbf-38af3bf86be1",
         "term_name": "Primary Patient Identifier",
-        "definition": "Unique system-generated value assigned to each patient to distinctly reference them across business processes and documentation.",
+        "definition": "A unique value assigned to each patient, connecting the patient to their identification documentation.",
         "source": "AI Suggester",
         "confidence_score": 95,
-        "created_date": "2026-07-10T10:38:20.265242",
+        "created_date": "2026-07-15T10:50:56.209561",
         "table_name": "PATIENT_ID_PROOF",
         "term_type": "Column",
         "physical_term": "PATIENT_ID"
+    },
+    {
+        "term_id": "1f90a67b-2c6b-4d9c-86b0-a85d03b2ca59",
+        "term_name": "Identification Document Type",
+        "definition": "Specifies the category or nature of identification document provided, such as passport, driver's license, or national ID card.",
+        "source": "AI Suggester",
+        "confidence_score": 90,
+        "created_date": "2026-07-15T10:50:56.223657",
+        "table_name": "PATIENT_ID_PROOF",
+        "term_type": "Column",
+        "physical_term": "ID_TYPE"
+    },
+    {
+        "term_id": "ba84a334-3466-4cf4-a5ec-b385a8ed3d7e",
+        "term_name": "Identification Document Number",
+        "definition": "The distinctive alphanumeric code appearing on the identification document, uniquely distinguishing it from other documents.",
+        "source": "AI Suggester",
+        "confidence_score": 92,
+        "created_date": "2026-07-15T10:50:56.247555",
+        "table_name": "PATIENT_ID_PROOF",
+        "term_type": "Column",
+        "physical_term": "ID_NUMBER"
     }
 ]

@@ -154,8 +154,9 @@ class WorkflowManager:
         for entry in approved:
             raw_table  = (entry.get("table_name") or "").strip()
             safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else None
-            asset_guid = f"workflow_{safe_table}" if safe_table else f"workflow_{entry.get('term_id', 'unknown')}"
-            table_name = raw_table if raw_table else "Workflow Approved Terms"
+            # Normalise key to uppercase to avoid case-sensitive duplicates
+            asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{entry.get('term_id', 'unknown')}"
+            table_name = raw_table.upper() if raw_table else "Workflow Approved Terms"
 
             if asset_guid not in master:
                 master[asset_guid] = []
