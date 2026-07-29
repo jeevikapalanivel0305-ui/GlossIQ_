@@ -2117,7 +2117,10 @@ def render_master_glossary_tab():
     _hub_uc_connected = st.session_state.get('integration_connectors', {}).get('Databricks Unity', {}).get('status') == 'Connected'
     _hub_purview_connected = st.session_state.get('integration_connectors', {}).get('Microsoft Purview', {}).get('status') == 'Connected'
 
-    if _hub_uc_connected and not _hub_purview_connected:
+    if _hub_uc_connected and _hub_purview_connected:
+        # Both connected — show all records (no filtering needed)
+        pass
+    elif _hub_uc_connected:
         _all_records = [r for r in _all_records if r.get("Source") == "Databricks Unity Catalog"]
         _uc_guids = {r.get("table_guid") for r in _all_records if r.get("table_guid")}
         summaries = [s for s in summaries if s["Asset GUID"] in _uc_guids]
@@ -2126,7 +2129,7 @@ def render_master_glossary_tab():
             return
         df_sum = pd.DataFrame(summaries)
         all_asset_names = df_sum["Asset Name"].tolist()
-    elif _hub_purview_connected and not _hub_uc_connected:
+    elif _hub_purview_connected:
         _all_records = [r for r in _all_records if r.get("Source") != "Databricks Unity Catalog"]
         _purview_guids = {r.get("table_guid") for r in _all_records if r.get("table_guid")}
         summaries = [s for s in summaries if s["Asset GUID"] in _purview_guids]
@@ -2287,11 +2290,14 @@ def render_master_glossary_tab():
             if full_history:
                 df_hist = pd.DataFrame(full_history)
 
-                # When UC is connected, restrict to UC-sourced records only
-                if _hub_uc_connected and "Source" in df_hist.columns:
+                # When UC is connected (and Purview is not), restrict to UC-sourced records only
+                if _hub_uc_connected and not _hub_purview_connected and "Source" in df_hist.columns:
                     df_hist = df_hist[df_hist["Source"] == "Databricks Unity Catalog"]
+                # When Purview is connected (and UC is not), restrict to Purview-sourced records only
+                elif _hub_purview_connected and not _hub_uc_connected and "Source" in df_hist.columns:
+                    df_hist = df_hist[df_hist["Source"] != "Databricks Unity Catalog"]
                 if df_hist.empty:
-                    st.info("No Unity Catalog approved records for this asset.")
+                    st.info("No approved records for this asset from the active connector.")
                     st.stop()
                 
                 # Apply filters
