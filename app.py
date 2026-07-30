@@ -2275,10 +2275,8 @@ def render_master_glossary_tab():
             unsafe_allow_html=True
         )
 
-        # ── View toggle + Edit ───────────────────────────────────────────────
-        tb_mid, tb_right = st.columns([3, 1])
-        with tb_mid:
-            view_mode = st.radio("View", ["Cards", "Table"], horizontal=True, key="hub_view_mode", label_visibility="collapsed")
+        # ── Edit toggle ───────────────────────────────────────────────────────
+        _, tb_right = st.columns([3, 1])
         with tb_right:
             edit_mode = st.toggle("✏️ Edit", key="hub_edit_mode", value=False)
 
@@ -2332,37 +2330,28 @@ def render_master_glossary_tab():
                 })
 
                 active_count = (df_hist["Active"] == 1).sum()
-                total_count  = len(df_hist)
 
                 # Remove trailing empty / all-NaN rows
                 df_hist = df_hist.dropna(how="all").reset_index(drop=True)
 
                 # ── Bento Grid Metrics ────────────────────────────────────────
-                m1, m2, m3, m4 = st.columns(4)
+                m1, m2, m3 = st.columns(3)
                 with m1:
                     st.markdown(
-                        f'<div style="background:linear-gradient(145deg,#10B981 0%,#059669 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(16,185,129,0.25);">'
+                        f'<div style="background:linear-gradient(145deg,#10B981 0%,#059669 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(16,185,129,0.25);">' 
                         f'<div style="font-size:26px;font-weight:800;color:#fff;">{active_count}</div>'
                         f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Active</div></div>',
                         unsafe_allow_html=True
                     )
                 with m2:
-                    st.markdown(
-                        f'<div style="background:linear-gradient(145deg,#3B82F6 0%,#2563EB 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(59,130,246,0.25);">'
-                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{total_count}</div>'
-                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Total</div></div>',
-                        unsafe_allow_html=True
-                    )
-                with m3:
                     versions_max = df_hist["Version"].max() if "Version" in df_hist.columns else 1
                     st.markdown(
-                        f'<div style="background:linear-gradient(145deg,#F59E0B 0%,#D97706 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(245,158,11,0.25);">'
+                        f'<div style="background:linear-gradient(145deg,#F59E0B 0%,#D97706 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(245,158,11,0.25);">' 
                         f'<div style="font-size:26px;font-weight:800;color:#fff;">{versions_max}</div>'
                         f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Versions</div></div>',
                         unsafe_allow_html=True
                     )
-                with m4:
-                    sources = df_hist["Source"].nunique() if "Source" in df_hist.columns else 0
+                with m3:
                     st.markdown(
                         f'<div style="background:linear-gradient(145deg,#8B5CF6 0%,#7C3AED 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(139,92,246,0.25);">'
                         f'<div style="font-size:26px;font-weight:800;color:#fff;">{sources}</div>'
@@ -2372,68 +2361,7 @@ def render_master_glossary_tab():
 
                 st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
-                if view_mode == "Cards":
-                    # ── Trending Card View (Neumorphic) ───────────────────────
-                    for idx, row in df_hist.iterrows():
-                        is_active = row.get("Active") == 1
-                        record_status_val = row.get("Status", "Approved" if is_active else "")
-                        is_rejected = record_status_val == "Rejected"
-                        typ = row.get("Type", "Column")
-                        phys = row.get("Physical Term", "")
-                        biz = row.get("Business Term", "")
-                        desc = row.get("Description", "")
-                        src = row.get("Source", "")
-                        stored = str(row.get("Stored At", ""))[:10]
-                        ver = row.get("Version", 1)
-
-                        # Dynamic accent colors
-                        if is_rejected:
-                            accent = "#EF4444"
-                            accent_bg = "rgba(239,68,68,0.06)"
-                            dot_color = "#EF4444"
-                        elif is_active and typ == "Table":
-                            accent = "#6366F1"
-                            accent_bg = "rgba(99,102,241,0.08)"
-                            dot_color = "#6366F1"
-                        elif is_active:
-                            accent = "#10B981"
-                            accent_bg = "rgba(16,185,129,0.06)"
-                            dot_color = "#10B981"
-                        else:
-                            accent = "#9CA3AF"
-                            accent_bg = "rgba(156,163,175,0.06)"
-                            dot_color = "#9CA3AF"
-
-                        if is_rejected:
-                            badge_html = f'<span style="background:linear-gradient(135deg,#EF4444,#DC2626);color:#fff;font-size:9px;padding:3px 10px;border-radius:20px;font-weight:700;letter-spacing:0.05em;box-shadow:0 2px 6px rgba(239,68,68,0.3);">✕ REJECTED</span>'
-                        elif is_active:
-                            badge_html = f'<span style="background:linear-gradient(135deg,#10B981,#059669);color:#fff;font-size:9px;padding:3px 10px;border-radius:20px;font-weight:700;letter-spacing:0.05em;box-shadow:0 2px 6px rgba(16,185,129,0.3);">● ACTIVE</span>'
-                        else:
-                            badge_html = f'<span style="background:#F1F5F9;color:#64748B;font-size:9px;padding:3px 10px;border-radius:20px;font-weight:600;">v{ver}</span>'
-
-                        st.markdown(
-                            f'<div style="border:1px solid {"#E2E8F0" if not is_active else "transparent"};border-radius:14px;padding:18px 22px;margin-bottom:12px;'
-                            f'background:{accent_bg};{"border-left:3px solid " + accent + ";" if is_active else ""}'
-                            f'box-shadow:0 1px 4px rgba(0,0,0,0.03);transition:all 0.2s;">'
-                            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'
-                            f'<div style="display:flex;align-items:center;gap:10px;">'
-                            f'<div style="width:8px;height:8px;border-radius:50%;background:{dot_color};"></div>'
-                            f'<span style="font-size:14px;font-weight:700;color:#0F172A;">{_html.escape(biz)}</span>'
-                            f'{badge_html}'
-                            f'</div>'
-                            f'<span style="font-size:10px;color:#94A3B8;font-weight:500;">{stored}</span>'
-                            f'</div>'
-                            f'<div style="display:flex;gap:12px;margin-bottom:8px;flex-wrap:wrap;">'
-                            f'<span style="font-size:11px;color:#334155;background:#F1F5F9;padding:4px 12px;border-radius:8px;font-family:monospace;font-weight:500;">{_html.escape(phys)}</span>'
-                            f'<span style="font-size:11px;color:{accent};background:{accent_bg};padding:4px 12px;border-radius:8px;font-weight:600;">{_html.escape(typ)}</span>'
-                            f'<span style="font-size:11px;color:#64748B;background:#F8FAFC;padding:4px 12px;border-radius:8px;">{_html.escape(src)}</span>'
-                            f'</div>'
-                            f'<div style="font-size:12px;color:#475569;line-height:1.6;margin-top:6px;">{_html.escape(desc[:250])}</div>'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                else:
-                    # ── Table View ────────────────────────────────────────────
+                # ── Table View ────────────────────────────────────────────
                     HIDDEN_COLS = {
                         "Select": None, "version": None,
                         "is_active": None, "timestamp": None, "data": None,
