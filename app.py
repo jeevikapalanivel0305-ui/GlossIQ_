@@ -2362,43 +2362,43 @@ def render_master_glossary_tab():
                 st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
                 # ── Table View ────────────────────────────────────────────
-                    HIDDEN_COLS = {
-                        "Select": None, "version": None,
-                        "is_active": None, "timestamp": None, "data": None,
-                        "table_guid": None, "entity_guid": None,
-                        "table_name": None, "related_column": None, "Confidence (%)": None
-                    }
-                    
-                    priority_cols = ["Active", "Version", "Status"]
-                    desired_order = ["Type", "Physical Term", "Business Term", "Description", "Source", "Stored At"]
-                    middle_cols = [c for c in desired_order if c in df_hist.columns and c not in priority_cols]
-                    extra_cols  = [c for c in df_hist.columns
-                                   if c not in priority_cols and c not in middle_cols and c not in HIDDEN_COLS]
-                    display_cols = [c for c in priority_cols if c in df_hist.columns] + middle_cols + extra_cols
-                    df_display = df_hist[display_cols] if display_cols else df_hist
+                HIDDEN_COLS = {
+                    "Select": None, "version": None,
+                    "is_active": None, "timestamp": None, "data": None,
+                    "table_guid": None, "entity_guid": None,
+                    "table_name": None, "related_column": None, "Confidence (%)": None
+                }
+                
+                priority_cols = ["Active", "Version", "Status"]
+                desired_order = ["Type", "Physical Term", "Business Term", "Description", "Source", "Stored At"]
+                middle_cols = [c for c in desired_order if c in df_hist.columns and c not in priority_cols]
+                extra_cols  = [c for c in df_hist.columns
+                               if c not in priority_cols and c not in middle_cols and c not in HIDDEN_COLS]
+                display_cols = [c for c in priority_cols if c in df_hist.columns] + middle_cols + extra_cols
+                df_display = df_hist[display_cols] if display_cols else df_hist
 
-                    col_config = {
-                        "Active":        st.column_config.NumberColumn("Active",   help="1 = Current, 0 = Historical", width="small"),
-                        "Version":       st.column_config.NumberColumn("Version",  width="small"),
-                        "Status":        st.column_config.TextColumn("Status",     help="Approved / Rejected", width="small"),
-                        "Type":          st.column_config.TextColumn("Type",       width="small"),
-                        "Physical Term": st.column_config.TextColumn("Physical Term"),
-                        "Business Term": st.column_config.TextColumn("Business Term"),
-                        "Description":   st.column_config.TextColumn("Description"),
-                        "Source":        st.column_config.TextColumn("Source",     width="small"),
-                        "Stored At":     st.column_config.TextColumn("Last Updated"),
-                        **HIDDEN_COLS
-                    }
+                col_config = {
+                    "Active":        st.column_config.NumberColumn("Active",   help="1 = Current, 0 = Historical", width="small"),
+                    "Version":       st.column_config.NumberColumn("Version",  width="small"),
+                    "Status":        st.column_config.TextColumn("Status",     help="Approved / Rejected", width="small"),
+                    "Type":          st.column_config.TextColumn("Type",       width="small"),
+                    "Physical Term": st.column_config.TextColumn("Physical Term"),
+                    "Business Term": st.column_config.TextColumn("Business Term"),
+                    "Description":   st.column_config.TextColumn("Description"),
+                    "Source":        st.column_config.TextColumn("Source",     width="small"),
+                    "Stored At":     st.column_config.TextColumn("Last Updated"),
+                    **HIDDEN_COLS
+                }
 
-                    st.data_editor(
-                        df_display,
-                        key=f"hub_view_{selected_guid}",
-                        hide_index=True,
-                        use_container_width=True,
-                        disabled=(not edit_mode),
-                        num_rows="fixed",
-                        column_config=col_config
-                    )
+                st.data_editor(
+                    df_display,
+                    key=f"hub_view_{selected_guid}",
+                    hide_index=True,
+                    use_container_width=True,
+                    disabled=(not edit_mode),
+                    num_rows="fixed",
+                    column_config=col_config
+                )
 
                 st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
