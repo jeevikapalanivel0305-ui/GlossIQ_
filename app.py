@@ -1011,7 +1011,11 @@ def render_review_tab():
                                         term_id,
                                         approver_comment=st.session_state.get(f"comment_{term_id}", ""),
                                     )
-                                    st.success(msg) if ok else st.error(msg)
+                                    if ok:
+                                        st.session_state["hub_approved_this_session"] = True
+                                        st.success(msg)
+                                    else:
+                                        st.error(msg)
                                     st.rerun()
                             if audit_conflict:
                                 with bm:
@@ -1023,7 +1027,11 @@ def render_review_tab():
                                             term_id,
                                             approver_comment=st.session_state.get(f"comment_{term_id}", ""),
                                         )
-                                        st.success(msg) if ok else st.error(msg)
+                                        if ok:
+                                            st.session_state["hub_approved_this_session"] = True
+                                            st.success(msg)
+                                        else:
+                                            st.error(msg)
                                         st.rerun()
                                 with bmore:
                                     with st.popover("···", use_container_width=True):
@@ -1060,7 +1068,11 @@ def render_review_tab():
                                             term_id,
                                             approver_comment=st.session_state.get(f"comment_{term_id}", ""),
                                         )
-                                        st.success(msg) if ok else st.error(msg)
+                                        if ok:
+                                            st.session_state["hub_approved_this_session"] = True
+                                            st.success(msg)
+                                        else:
+                                            st.error(msg)
                                         st.rerun()
                                 with bmerge:
                                     with st.popover("···", use_container_width=True):
@@ -1114,7 +1126,11 @@ def render_review_tab():
                                                 term_id,
                                                 approver_comment=st.session_state.get(f"comment_{term_id}", ""),
                                             )
-                                            st.success(msg) if ok else st.error(msg)
+                                            if ok:
+                                                st.session_state["hub_approved_this_session"] = True
+                                                st.success(msg)
+                                            else:
+                                                st.error(msg)
                                             st.rerun()
 
                         elif status in ("Approved", "Approved (Merged)", "Rejected"):
@@ -1216,6 +1232,7 @@ def render_review_tab():
                                     e["term_id"],
                                     approver_comment="Bulk approve",
                                 )
+                        st.session_state["hub_approved_this_session"] = True
                         st.rerun()
                 with _fc3:
                     if st.button("✕ Reject Selected", key="bulk_reject",
@@ -1398,66 +1415,120 @@ def render_lineage_tab():
         '<h1 class="workbench-title">Business Term Lineage</h1>'
         '<p class="workbench-desc">End-to-end lineage: '
         '<strong>Source</strong> → <strong>Asset (Table)</strong> → <strong>Attribute (Column)</strong> → <strong>Business Term</strong>, '
-        'with Domain ownership and confidence score. Only terms from connected sources are shown.</p>'
+        'with Domain ownership and confidence score.</p>'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    # ── Source-to-connector mapping ──────────────────────────────────────────
-    # Maps a glossary "Source" value → integration_connectors key
-    # Only terms whose source maps to a Connected integration are shown.
-    _SRC_CONNECTOR_MAP = {
-        "Databricks Unity Catalog": "Databricks Unity",
-        "Microsoft Purview":        "Microsoft Purview",
-    }
-
     _connectors = st.session_state.get("integration_connectors", {})
-
-    def _source_is_available(src: str) -> bool:
-        # AI Suggester / Manual / etc. are internal — never shown in lineage.
-        # Only sources that exist in _SRC_CONNECTOR_MAP are real integrations.
-        if src not in _SRC_CONNECTOR_MAP:
-            return False
-        connector_key = _SRC_CONNECTOR_MAP[src]
-        # Direct match: the source's own connector is connected
-        if _connectors.get(connector_key, {}).get("status") == "Connected":
-            return True
-        # Purview as governance layer: when Purview is connected it catalogs
-        # Databricks Unity Catalog assets, so surface those terms too.
-        if src == "Databricks Unity Catalog":
-            return _connectors.get("Microsoft Purview", {}).get("status") == "Connected"
-        return False
-
-    # ── Load glossary_master ─────────────────────────────────────────────────
-    glossary_path = os.path.join(os.path.dirname(__file__), 'backend', 'glossary_master.json')
-    try:
-        with open(glossary_path, encoding='utf-8') as _f:
-            glossary_data = json.load(_f)
-    except Exception:
-        glossary_data = {}
-
-    # ── Flatten ALL active terms (used for total count) ──────────────────────
-    all_terms_full: dict = {}
-    for entries in glossary_data.values():
-        for entry in entries:
-            if entry.get("Active", 0) == 1:
-                bt = entry["Business Term"]
-                if bt not in all_terms_full:
-                    all_terms_full[bt] = []
-                all_terms_full[bt].append(entry)
-
-    # ── Filter to CONNECTED-source terms only ────────────────────────────────
-    # Strict: only terms whose source maps to a currently-connected integration.
-    # Purview connected → all glossary terms (Purview governs the whole hub).
-    # Databricks connected → only Databricks-sourced terms.
-    # Neither → nothing shown.
-    all_terms: dict = {}
-    for bt, ents in all_terms_full.items():
-        filtered = [e for e in ents if _source_is_available(e.get("Source", ""))]
-        if filtered:
-            all_terms[bt] = filtered
-
     purview_connected = _connectors.get("Microsoft Purview", {}).get("status") == "Connected"
+    databricks_connected = _connectors.get("Databricks Unity", {}).get("status") == "Connected"
+
+    # ── Load glossary data from ALL available sources ────────────────────────
+    glossary_data = {}
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Source 1: glossary_master.json
+    try:
+        glossary_path = os.path.join(_base_dir, 'backend', 'glossary_master.json')
+        with open(glossary_path, encoding='utf-8') as _f:
+            _gm = json.load(_f)
+        if isinstance(_gm, dict) and _gm:
+            glossary_data = _gm
+    except Exception as e:
+        st.caption(f"⚠ glossary_master.json: {e}")
+
+    # Source 2: SQLite database
+    if not glossary_data:
+        try:
+            _db_all = glossary_db.get_active_terms()
+            if _db_all:
+                for rec in _db_all:
+                    guid = rec.get("table_guid", "")
+                    entry = {
+                        "Business Term": rec.get("business_term", ""),
+                        "Physical Term": rec.get("physical_term", ""),
+                        "Definition / Description": rec.get("description", ""),
+                        "Type": rec.get("type", "Column"),
+                        "Source": rec.get("source", "AI Suggester"),
+                        "Confidence (%)": rec.get("confidence", 0),
+                        "Active": 1,
+                        "table_name": rec.get("table_name", ""),
+                        "table_guid": guid,
+                    }
+                    glossary_data.setdefault(guid, []).append(entry)
+        except Exception as e:
+            st.caption(f"⚠ SQLite: {e}")
+
+    # Source 3: ai_suggested_terms.json
+    if not glossary_data:
+        try:
+            _ai_path = os.path.join(_base_dir, 'backend', 'ai_suggested_terms.json')
+            with open(_ai_path, encoding='utf-8') as _af:
+                _ai_terms = json.load(_af)
+            if isinstance(_ai_terms, list) and _ai_terms:
+                for t in _ai_terms:
+                    raw_table = (t.get("table_name") or "").strip()
+                    safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
+                    guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{t.get('term_id', 'unknown')}"
+                    entry = {
+                        "Business Term": t.get("term_name", ""),
+                        "Physical Term": t.get("physical_term", t.get("term_name", "")),
+                        "Definition / Description": t.get("definition", ""),
+                        "Type": t.get("term_type", "Column"),
+                        "Source": t.get("source", "AI Suggester"),
+                        "Confidence (%)": t.get("confidence_score", 0),
+                        "Active": 1,
+                        "table_name": raw_table.upper() if raw_table else "",
+                        "table_guid": guid,
+                    }
+                    glossary_data.setdefault(guid, []).append(entry)
+        except Exception as e:
+            st.caption(f"⚠ ai_suggested_terms.json: {e}")
+
+    # Source 4: approval_queue.json (approved entries)
+    if not glossary_data:
+        try:
+            _q_path = os.path.join(_base_dir, 'backend', 'approval_queue.json')
+            with open(_q_path, encoding='utf-8') as _qf:
+                _queue = json.load(_qf)
+            if isinstance(_queue, list):
+                for t in _queue:
+                    if t.get("status") in ("Approved", "Approved (Merged)", "Pending"):
+                        raw_table = (t.get("table_name") or "").strip()
+                        safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
+                        guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{t.get('term_id', 'unknown')}"
+                        entry = {
+                            "Business Term": t.get("term_name", ""),
+                            "Physical Term": t.get("physical_term", t.get("term_name", "")),
+                            "Definition / Description": t.get("definition", ""),
+                            "Type": t.get("term_type", "Column"),
+                            "Source": t.get("source", "AI Suggester"),
+                            "Confidence (%)": t.get("confidence_score", 0),
+                            "Active": 1,
+                            "table_name": raw_table.upper() if raw_table else "",
+                            "table_guid": guid,
+                        }
+                        glossary_data.setdefault(guid, []).append(entry)
+        except Exception as e:
+            st.caption(f"⚠ approval_queue.json: {e}")
+
+    # ── Flatten to unique business terms ─────────────────────────────────────
+    all_terms: dict = {}
+    for term_entries in glossary_data.values():
+        for entry in term_entries:
+            if entry.get("Active", 0) == 1:
+                bt = entry.get("Business Term", "")
+                if bt:
+                    all_terms.setdefault(bt, []).append(entry)
+
+    # Apply connector filter only when Databricks-only (Purview shows all)
+    if databricks_connected and not purview_connected:
+        all_terms = {
+            bt: [e for e in ents if e.get("Source", "") == "Databricks Unity Catalog"]
+            for bt, ents in all_terms.items()
+        }
+        all_terms = {bt: ents for bt, ents in all_terms.items() if ents}
 
     if not all_terms:
         st.warning(
@@ -1499,8 +1570,6 @@ def render_lineage_tab():
     lines.append('')
 
     seen_src, seen_tbl, seen_col, seen_dom = {}, {}, {}, {}
-
-    databricks_connected = _connectors.get("Databricks Unity", {}).get("status") == "Connected"
 
     for entry in entries:
         raw_src = entry.get("Source", "Unknown")
@@ -2111,7 +2180,10 @@ def render_master_glossary_tab():
     
     # Check both JSON store and SQLite database for data
     summaries = PersistenceManager.get_all_stored_summaries()
-    db_tables_all = glossary_db.get_all_table_summaries()
+    _hub_has_new_approvals = st.session_state.get("hub_approved_this_session", False)
+    _hub_session_start = st.session_state.get("session_start_time", "")
+    _hub_since = _hub_session_start if _hub_has_new_approvals else None
+    db_tables_all = glossary_db.get_all_table_summaries(since=_hub_since)
     
     # Merge: prefer SQLite as source of truth, fall back to JSON
     if db_tables_all:
@@ -2318,21 +2390,21 @@ def render_master_glossary_tab():
             elif _hub_purview_connected and not _hub_uc_connected:
                 _db_source_filter = "AI Suggester"
 
+            # Determine if approvals happened this session
+            _has_new_approvals = st.session_state.get("hub_approved_this_session", False)
+            _session_start = st.session_state.get("session_start_time", "")
+
             # Fetch from SQLite: active terms or full history
             if show_history or active_filter == "All":
                 db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=_db_source_filter)
             elif active_filter == "Non-Active":
                 db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=_db_source_filter)
+            elif _has_new_approvals and _session_start:
+                # User approved terms this session → show only newly approved terms
+                db_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter, since=_session_start)
             else:
-                # Check if any terms were approved in this session
-                _session_start = st.session_state.get("session_start_time", "")
-                _session_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter, since=_session_start) if _session_start else []
-                if _session_records:
-                    # Terms were approved this session — show only newly approved
-                    db_records = _session_records
-                else:
-                    # Fresh session, no new approvals — show all active terms
-                    db_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter)
+                # Fresh session, no approvals yet → show all active terms
+                db_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter)
 
             # Fallback to JSON store if SQLite is empty (backward compatibility)
             if not db_records:
@@ -2344,13 +2416,19 @@ def render_master_glossary_tab():
                         df_hist = df_hist[df_hist["Source"] == "Databricks Unity Catalog"]
                     elif _hub_purview_connected and not _hub_uc_connected and "Source" in df_hist.columns:
                         df_hist = df_hist[df_hist["Source"] != "Databricks Unity Catalog"]
-                    # Apply active/non-active filter
-                    if not show_history and active_filter == "Active":
+                    # Apply filter
+                    if show_history or active_filter == "All":
+                        pass  # show everything
+                    elif active_filter == "Non-Active":
+                        df_hist = df_hist[df_hist["Active"] == 0]
+                    elif _has_new_approvals and _session_start and "Stored At" in df_hist.columns:
+                        # Show only newly approved active terms
+                        df_hist = df_hist[(df_hist["Active"] == 1) & (df_hist["Stored At"] >= _session_start)]
+                    else:
+                        # Fresh session — show all active
                         df_hist = df_hist[df_hist["Active"] == 1]
                         if "Status" in df_hist.columns:
                             df_hist = df_hist[df_hist["Status"] != "Rejected"]
-                    elif active_filter == "Non-Active":
-                        df_hist = df_hist[df_hist["Active"] == 0]
                 else:
                     df_hist = pd.DataFrame()
             else:
@@ -2467,6 +2545,21 @@ def render_master_glossary_tab():
                 num_rows="fixed",
                 column_config=col_config
             )
+
+            # ── Lineage shortcuts for approved terms ─────────────────────────
+            _active_terms = df_hist[df_hist["Active"] == 1]
+            if "Business Term" in _active_terms.columns:
+                _unique_bterms = _active_terms["Business Term"].dropna().unique().tolist()
+                if _unique_bterms:
+                    st.markdown("##### 🔗 View Lineage")
+                    _lin_cols = st.columns(min(len(_unique_bterms), 4))
+                    for idx, bt in enumerate(_unique_bterms):
+                        with _lin_cols[idx % min(len(_unique_bterms), 4)]:
+                            if st.button(f"🔍 {bt}", key=f"hub_lin_{idx}", use_container_width=True,
+                                         help=f"View lineage for {bt}"):
+                                st.session_state["lineage_term_selector"] = bt
+                                st.session_state["selected_tab"] = "Lineage Map"
+                                st.rerun()
 
             st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
