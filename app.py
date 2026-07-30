@@ -2109,15 +2109,21 @@ def render_master_glossary_tab():
     render_dashboard_header("Glossary Hub")
     st.markdown('<div class="workbench-header"><div class="accent-line"></div><h1 class="workbench-title">Glossary Hub</h1><p class="workbench-desc">Enterprise Source of Truth — All approved, versioned glossary records with full audit history.</p></div>', unsafe_allow_html=True)
     
+    # Session time used to distinguish "newly approved" vs "previously approved"
+    _session_start = st.session_state.get("session_start_time", "")
+
     # Check both JSON store and SQLite database for data
     summaries = PersistenceManager.get_all_stored_summaries()
-    db_tables = glossary_db.get_all_table_summaries()
+    # For default view: only show tables with terms approved in this session
+    # For history view: show all tables
+    db_tables_all = glossary_db.get_all_table_summaries()
+    db_tables_current = glossary_db.get_all_table_summaries(since=_session_start) if _session_start else db_tables_all
     
     # Merge: prefer SQLite as source of truth, fall back to JSON
-    if db_tables:
-        # Build summaries from SQLite
+    if db_tables_all:
+        # Build summaries from SQLite (all tables for table filter)
         summaries = []
-        for t in db_tables:
+        for t in db_tables_all:
             summaries.append({
                 "Asset GUID": t["table_guid"],
                 "Asset Name": t["table_name"],
@@ -2322,7 +2328,8 @@ def render_master_glossary_tab():
             if show_history or active_filter != "Active":
                 db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=_db_source_filter)
             else:
-                db_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter)
+                # Default: show only terms approved in this session
+                db_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter, since=_session_start)
 
             # Fallback to JSON store if SQLite is empty (backward compatibility)
             if not db_records:
@@ -2335,10 +2342,13 @@ def render_master_glossary_tab():
                     elif _hub_purview_connected and not _hub_uc_connected and "Source" in df_hist.columns:
                         df_hist = df_hist[df_hist["Source"] != "Databricks Unity Catalog"]
                     # Apply active/non-active filter
-                    if active_filter == "Active":
+                    if active_filter == "Active" and not show_history:
                         df_hist = df_hist[df_hist["Active"] == 1]
                         if "Status" in df_hist.columns:
                             df_hist = df_hist[df_hist["Status"] != "Rejected"]
+                        # Show only current session terms
+                        if _session_start and "Stored At" in df_hist.columns:
+                            df_hist = df_hist[df_hist["Stored At"] >= _session_start]
                     elif active_filter == "Non-Active":
                         df_hist = df_hist[df_hist["Active"] == 0]
                 else:

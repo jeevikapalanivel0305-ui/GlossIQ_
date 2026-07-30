@@ -83,8 +83,8 @@ def deactivate_term(table_guid, physical_term):
     conn.close()
 
 
-def get_active_terms(table_guid=None, source_filter=None):
-    """Get only currently active (approved) terms."""
+def get_active_terms(table_guid=None, source_filter=None, since=None):
+    """Get only currently active (approved) terms. If 'since' is set, only return terms stored after that timestamp."""
     conn = _get_conn()
     query = "SELECT * FROM glossary_terms WHERE active = 1 AND status != 'Rejected'"
     params = []
@@ -94,6 +94,9 @@ def get_active_terms(table_guid=None, source_filter=None):
     if source_filter:
         query += " AND source = ?"
         params.append(source_filter)
+    if since:
+        query += " AND stored_at >= ?"
+        params.append(since)
     query += " ORDER BY table_name, physical_term"
     rows = conn.execute(query, params).fetchall()
     conn.close()
@@ -117,8 +120,8 @@ def get_all_terms(table_guid=None, source_filter=None):
     return [dict(r) for r in rows]
 
 
-def get_all_table_summaries(source_filter=None):
-    """Get summary of all tables in the database."""
+def get_all_table_summaries(source_filter=None, since=None):
+    """Get summary of all tables in the database. If 'since' is set, only count terms stored after that timestamp."""
     conn = _get_conn()
     query = """
         SELECT table_guid, table_name,
@@ -132,6 +135,9 @@ def get_all_table_summaries(source_filter=None):
     if source_filter:
         query += " AND source = ?"
         params.append(source_filter)
+    if since:
+        query += " AND stored_at >= ?"
+        params.append(since)
     query += " GROUP BY table_guid, table_name ORDER BY last_updated DESC"
     rows = conn.execute(query, params).fetchall()
     conn.close()
