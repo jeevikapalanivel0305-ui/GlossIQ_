@@ -24,6 +24,8 @@ from difflib import SequenceMatcher
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+from backend import glossary_db
+
 # ── Storage paths ──────────────────────────────────────────────────────────────
 SUGGESTED_TERMS_STORE = "backend/ai_suggested_terms.json"
 APPROVAL_QUEUE_STORE  = "backend/approval_queue.json"
@@ -573,14 +575,37 @@ class WorkflowManager:
         # 2. Rebuild Glossary Hub entirely from audit log
         cls._rebuild_master_from_audit_log()
 
-        # 3. Update queue entry
+        # 3. Store in SQLite database for permanent persistence
+        raw_table = (entry.get("table_name") or "").strip()
+        safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
+        asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{term_id}"
+        phys_term = entry.get("physical_term") or entry.get("term_name") or ""
+        # Deactivate previous active record for this physical term
+        glossary_db.deactivate_term(asset_guid, phys_term)
+        next_ver = glossary_db.get_next_version(asset_guid, phys_term)
+        glossary_db.store_term(
+            entity_guid=term_id,
+            table_guid=asset_guid,
+            table_name=raw_table.upper() if raw_table else "Workflow Approved Terms",
+            business_term=entry.get("term_name", ""),
+            physical_term=phys_term,
+            description=entry.get("definition", ""),
+            term_type=entry.get("term_type", "Column"),
+            source=entry.get("source", "AI Suggester"),
+            confidence=entry.get("confidence_score", 0),
+            active=1,
+            version=next_ver,
+            status="Approved",
+        )
+
+        # 4. Update queue entry
         cls._update_queue_entry(term_id, {
             "status":           "Approved",
             "approver_comment": approver_comment,
             "decision_date":    datetime.now().isoformat(),
         })
 
-        # 4. Re-run conflict checks on remaining pending entries
+        # 5. Re-run conflict checks on remaining pending entries
         cls._recheck_pending_conflicts()
 
         return True, "Term approved and added to Glossary Hub"
@@ -615,6 +640,27 @@ class WorkflowManager:
 
         # Rebuild Glossary Hub to include rejection history
         cls._rebuild_master_from_audit_log()
+
+        # Store rejection in SQLite database for permanent history
+        raw_table = (entry.get("table_name") or "").strip()
+        safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
+        asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{term_id}"
+        phys_term = entry.get("physical_term") or entry.get("term_name") or ""
+        next_ver = glossary_db.get_next_version(asset_guid, phys_term)
+        glossary_db.store_term(
+            entity_guid=term_id,
+            table_guid=asset_guid,
+            table_name=raw_table.upper() if raw_table else "Workflow Terms",
+            business_term=entry.get("term_name", ""),
+            physical_term=phys_term,
+            description=entry.get("definition", ""),
+            term_type=entry.get("term_type", "Column"),
+            source=entry.get("source", "AI Suggester"),
+            confidence=entry.get("confidence_score", 0),
+            active=0,
+            version=next_ver,
+            status="Rejected",
+        )
 
         return True, "Term rejected"
 
@@ -730,14 +776,36 @@ class WorkflowManager:
         # 2. Rebuild Glossary Hub from audit log
         cls._rebuild_master_from_audit_log()
 
-        # 3. Update queue entry
+        # 3. Store merged term in SQLite database
+        raw_table = (entry.get("table_name") or "").strip()
+        safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
+        asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{term_id}"
+        phys_term = entry.get("physical_term") or entry.get("term_name") or ""
+        glossary_db.deactivate_term(asset_guid, phys_term)
+        next_ver = glossary_db.get_next_version(asset_guid, phys_term)
+        glossary_db.store_term(
+            entity_guid=term_id,
+            table_guid=asset_guid,
+            table_name=raw_table.upper() if raw_table else "Workflow Approved Terms",
+            business_term=entry.get("term_name", ""),
+            physical_term=phys_term,
+            description=entry.get("definition", ""),
+            term_type=entry.get("term_type", "Column"),
+            source=entry.get("source", "AI Suggester"),
+            confidence=entry.get("confidence_score", 0),
+            active=1,
+            version=next_ver,
+            status="Approved (Merged)",
+        )
+
+        # 4. Update queue entry
         cls._update_queue_entry(term_id, {
             "status":           "Approved (Merged)",
             "approver_comment": approver_comment,
             "decision_date":    datetime.now().isoformat(),
         })
 
-        # 4. Re-run conflict checks on remaining pending entries
+        # 5. Re-run conflict checks on remaining pending entries
         cls._recheck_pending_conflicts()
 
         return True, "Term merged — existing audit log record updated to Approved (Merged)"

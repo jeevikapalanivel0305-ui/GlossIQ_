@@ -18,6 +18,7 @@ from backend.governance_engine import GovernanceEngine
 from backend.persistence_manager import PersistenceManager, load_rbac, save_rbac
 from backend.workflow_manager import WorkflowManager
 from backend.semantic_search import semantic_search_glossary, keyword_search_glossary
+from backend import glossary_db
 
 st.set_page_config(
     page_title="Glossary Enricher Accelerator",
@@ -2239,13 +2240,6 @@ def render_master_glossary_tab():
                 key="hub_class_filter", label_visibility="collapsed"
             )
 
-        # ── Records Status filter ──────────────────────────────────────────────
-        with st.expander("Record Status", expanded=False):
-            record_status = st.radio(
-                "Select status", ["Active", "All", "Non-Active"],
-                key="hub_status_filter", label_visibility="collapsed"
-            )
-
         # ── Table / Asset filter ──────────────────────────────────────────────
         with st.expander("Table Filter", expanded=False):
             if asset_filter != "All":
@@ -2270,302 +2264,327 @@ def render_master_glossary_tab():
             f'<div style="font-size:12px;opacity:0.85;margin-top:4px;">Enterprise glossary — versioned & governed</div>'
             f'</div>'
             f'<div style="background:rgba(255,255,255,0.15);backdrop-filter:blur(4px);border-radius:8px;padding:6px 14px;font-size:11px;font-weight:600;">'
-            f'Active: {record_status}</div>'
+            f'Active Terms</div>'
             f'</div></div>',
             unsafe_allow_html=True
         )
 
-        # ── Edit toggle ───────────────────────────────────────────────
-        _, tb_right = st.columns([3, 1])
+        # ── Toggle row: History + Edit ───────────────────────────────────────
+        tb_left, tb_right = st.columns([3, 1])
+        with tb_left:
+            show_history = st.toggle("📜 Show History", key="hub_show_history", value=False)
         with tb_right:
             edit_mode = st.toggle("✏️ Edit", key="hub_edit_mode", value=False)
 
         # ── Data Display ──────────────────────────────────────────────────────
         if asset_to_view:
             selected_guid = df_sum[df_sum["Asset Name"] == asset_to_view]["Asset GUID"].iloc[0]
-            full_history = PersistenceManager.get_all_versions([selected_guid])
-            
-            if full_history:
-                df_hist = pd.DataFrame(full_history)
 
-                # When UC is connected (and Purview is not), restrict to UC-sourced records only
-                if _hub_uc_connected and not _hub_purview_connected and "Source" in df_hist.columns:
-                    df_hist = df_hist[df_hist["Source"] == "Databricks Unity Catalog"]
-                # When Purview is connected (and UC is not), restrict to Purview-sourced records only
-                elif _hub_purview_connected and not _hub_uc_connected and "Source" in df_hist.columns:
-                    df_hist = df_hist[df_hist["Source"] != "Databricks Unity Catalog"]
-                if df_hist.empty:
-                    st.info("No approved records for this asset from the active connector.")
-                    st.stop()
+            # Determine source filter based on connector
+            _db_source_filter = None
+            if _hub_uc_connected and not _hub_purview_connected:
+                _db_source_filter = "Databricks Unity Catalog"
+            elif _hub_purview_connected and not _hub_uc_connected:
+                _db_source_filter = "AI Suggester"
 
-                # Recalculate version numbers per Physical Term within the filtered view
-                if "Version" in df_hist.columns:
-                    _id_col = "Physical Term" if "Physical Term" in df_hist.columns else ("Original Name" if "Original Name" in df_hist.columns else None)
-                    if _id_col:
-                        df_hist = df_hist.sort_values(["Stored At"], ascending=True).reset_index(drop=True)
-                        df_hist["Version"] = df_hist.groupby(_id_col).cumcount() + 1
-                    else:
-                        df_hist["Version"] = range(1, len(df_hist) + 1)
-                
-                # Apply filters
-                if record_status == "Active":
-                    df_hist = df_hist[df_hist["Active"] == 1]
-                elif record_status == "Non-Active":
-                    df_hist = df_hist[df_hist["Active"] == 0]
-                
-                if collection_filter != "All" and "Type" in df_hist.columns:
-                    df_hist = df_hist[df_hist["Type"] == collection_filter]
+            # Fetch from SQLite: active terms or full history
+            if show_history:
+                db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=_db_source_filter)
+            else:
+                db_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter)
 
-                if classification_filter != "All" and "Classification" in df_hist.columns:
-                    df_hist = df_hist[df_hist["Classification"] == classification_filter]
-                
-                # Active records first
-                df_hist = df_hist.sort_values("Active", ascending=False).reset_index(drop=True)
-
-                # Normalise column names
+            # Fallback to JSON store if SQLite is empty (backward compatibility)
+            if not db_records:
+                full_history = PersistenceManager.get_all_versions([selected_guid])
+                if full_history:
+                    df_hist = pd.DataFrame(full_history)
+                    # Filter by connector
+                    if _hub_uc_connected and not _hub_purview_connected and "Source" in df_hist.columns:
+                        df_hist = df_hist[df_hist["Source"] == "Databricks Unity Catalog"]
+                    elif _hub_purview_connected and not _hub_uc_connected and "Source" in df_hist.columns:
+                        df_hist = df_hist[df_hist["Source"] != "Databricks Unity Catalog"]
+                    if not show_history:
+                        df_hist = df_hist[df_hist["Active"] == 1]
+                        if "Status" in df_hist.columns:
+                            df_hist = df_hist[df_hist["Status"] != "Rejected"]
+                else:
+                    df_hist = pd.DataFrame()
+            else:
+                # Convert SQLite records to DataFrame
+                df_hist = pd.DataFrame(db_records)
+                # Rename SQLite columns to match display format
                 df_hist = df_hist.rename(columns={
-                    "Original Name":           "Physical Term",
-                    "Definition / Description": "Description",
-                    "Glossary Term":            "Business Term",
+                    "business_term": "Business Term",
+                    "physical_term": "Physical Term",
+                    "description": "Description",
+                    "type": "Type",
+                    "source": "Source",
+                    "confidence": "Confidence (%)",
+                    "active": "Active",
+                    "version": "Version",
+                    "status": "Status",
+                    "stored_at": "Stored At",
+                    "table_name": "table_name",
+                    "table_guid": "table_guid",
+                    "entity_guid": "entity_guid",
                 })
 
-                active_count = (df_hist["Active"] == 1).sum()
+            if df_hist.empty:
+                st.info("No approved records found for this asset." if not show_history else "No records found in history.")
+                st.stop()
 
-                # Remove trailing empty / all-NaN rows
-                df_hist = df_hist.dropna(how="all").reset_index(drop=True)
+            # Normalise column names
+            df_hist = df_hist.rename(columns={
+                "Original Name":           "Physical Term",
+                "Definition / Description": "Description",
+                "Glossary Term":            "Business Term",
+            })
 
-                # ── Bento Grid Metrics ────────────────────────────────────────
-                m1, m2, m3 = st.columns(3)
-                with m1:
-                    st.markdown(
-                        f'<div style="background:linear-gradient(145deg,#10B981 0%,#059669 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(16,185,129,0.25);">' 
-                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{active_count}</div>'
-                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Active</div></div>',
-                        unsafe_allow_html=True
-                    )
-                with m2:
-                    versions_max = df_hist["Version"].max() if "Version" in df_hist.columns else 1
-                    st.markdown(
-                        f'<div style="background:linear-gradient(145deg,#F59E0B 0%,#D97706 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(245,158,11,0.25);">' 
-                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{versions_max}</div>'
-                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Versions</div></div>',
-                        unsafe_allow_html=True
-                    )
-                with m3:
-                    st.markdown(
-                        f'<div style="background:linear-gradient(145deg,#8B5CF6 0%,#7C3AED 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(139,92,246,0.25);">'
-                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{sources}</div>'
-                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Sources</div></div>',
-                        unsafe_allow_html=True
-                    )
+            # Apply classification filter
+            if classification_filter != "All" and "Classification" in df_hist.columns:
+                df_hist = df_hist[df_hist["Classification"] == classification_filter]
 
-                st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+            # Active records first
+            df_hist = df_hist.sort_values("Active", ascending=False).reset_index(drop=True)
 
-                # ── Table View ────────────────────────────────────────────
-                HIDDEN_COLS = {
-                    "Select": None, "version": None,
-                    "is_active": None, "timestamp": None, "data": None,
-                    "table_guid": None, "entity_guid": None,
-                    "table_name": None, "related_column": None, "Confidence (%)": None
-                }
-                    
-                priority_cols = ["Active", "Version", "Status"]
-                desired_order = ["Type", "Physical Term", "Business Term", "Description", "Source", "Stored At"]
-                middle_cols = [c for c in desired_order if c in df_hist.columns and c not in priority_cols]
-                extra_cols  = [c for c in df_hist.columns
-                               if c not in priority_cols and c not in middle_cols and c not in HIDDEN_COLS]
-                display_cols = [c for c in priority_cols if c in df_hist.columns] + middle_cols + extra_cols
-                df_display = df_hist[display_cols] if display_cols else df_hist
+            active_count = (df_hist["Active"] == 1).sum()
 
-                col_config = {
-                    "Active":        st.column_config.NumberColumn("Active",   help="1 = Current, 0 = Historical", width="small"),
-                    "Version":       st.column_config.NumberColumn("Version",  width="small"),
-                    "Status":        st.column_config.TextColumn("Status",     help="Approved / Rejected", width="small"),
-                    "Type":          st.column_config.TextColumn("Type",       width="small"),
-                    "Physical Term": st.column_config.TextColumn("Physical Term"),
-                    "Business Term": st.column_config.TextColumn("Business Term"),
-                    "Description":   st.column_config.TextColumn("Description"),
-                    "Source":        st.column_config.TextColumn("Source",     width="small"),
-                    "Stored At":     st.column_config.TextColumn("Last Updated"),
-                    **HIDDEN_COLS
-                }
+            # Remove trailing empty / all-NaN rows
+            df_hist = df_hist.dropna(how="all").reset_index(drop=True)
 
-                st.data_editor(
-                    df_display,
-                    key=f"hub_view_{selected_guid}",
-                    hide_index=True,
-                    use_container_width=True,
-                    disabled=(not edit_mode),
-                    num_rows="fixed",
-                    column_config=col_config
+            # ── Bento Grid Metrics ────────────────────────────────────────
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.markdown(
+                    f'<div style="background:linear-gradient(145deg,#10B981 0%,#059669 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(16,185,129,0.25);">' 
+                    f'<div style="font-size:26px;font-weight:800;color:#fff;">{active_count}</div>'
+                    f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Active</div></div>',
+                    unsafe_allow_html=True
+                )
+            with m2:
+                versions_max = df_hist["Version"].max() if "Version" in df_hist.columns else 1
+                st.markdown(
+                    f'<div style="background:linear-gradient(145deg,#F59E0B 0%,#D97706 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(245,158,11,0.25);">' 
+                    f'<div style="font-size:26px;font-weight:800;color:#fff;">{versions_max}</div>'
+                    f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Versions</div></div>',
+                    unsafe_allow_html=True
+                )
+            with m3:
+                sources = df_hist["Source"].nunique() if "Source" in df_hist.columns else 0
+                st.markdown(
+                    f'<div style="background:linear-gradient(145deg,#8B5CF6 0%,#7C3AED 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(139,92,246,0.25);">'
+                    f'<div style="font-size:26px;font-weight:800;color:#fff;">{sources}</div>'
+                    f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Sources</div></div>',
+                    unsafe_allow_html=True
                 )
 
-                st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
-                # ── Single Smart Register Button ─────────────────────────────────
-                can_register = st.session_state.user_role == "Administrator"
-                active_df = df_hist[df_hist["Active"] == 1]
+            # ── Table View ────────────────────────────────────────────
+            HIDDEN_COLS = {
+                "Select": None, "version": None, "id": None, "created_at": None,
+                "is_active": None, "timestamp": None, "data": None,
+                "table_guid": None, "entity_guid": None,
+                "table_name": None, "related_column": None, "Confidence (%)": None
+            }
+                
+            priority_cols = ["Active", "Version", "Status"]
+            desired_order = ["Type", "Physical Term", "Business Term", "Description", "Source", "Stored At"]
+            middle_cols = [c for c in desired_order if c in df_hist.columns and c not in priority_cols]
+            extra_cols  = [c for c in df_hist.columns
+                           if c not in priority_cols and c not in middle_cols and c not in HIDDEN_COLS]
+            display_cols = [c for c in priority_cols if c in df_hist.columns] + middle_cols + extra_cols
+            df_display = df_hist[display_cols] if display_cols else df_hist
 
-                _connectors  = st.session_state.integration_connectors
-                _purview_cfg = _connectors.get("Microsoft Purview", {})
-                _db_cfg      = _connectors.get("Databricks Unity", {})
-                _purview_on  = _purview_cfg.get("status") == "Connected"
-                _db_on       = _db_cfg.get("status") == "Connected"
+            col_config = {
+                "Active":        st.column_config.NumberColumn("Active",   help="1 = Current, 0 = Historical", width="small"),
+                "Version":       st.column_config.NumberColumn("Version",  width="small"),
+                "Status":        st.column_config.TextColumn("Status",     help="Approved / Rejected", width="small"),
+                "Type":          st.column_config.TextColumn("Type",       width="small"),
+                "Physical Term": st.column_config.TextColumn("Physical Term"),
+                "Business Term": st.column_config.TextColumn("Business Term"),
+                "Description":   st.column_config.TextColumn("Description"),
+                "Source":        st.column_config.TextColumn("Source",     width="small"),
+                "Stored At":     st.column_config.TextColumn("Last Updated"),
+                **HIDDEN_COLS
+            }
 
-                # Determine which platform is connected
+            st.data_editor(
+                df_display,
+                key=f"hub_view_{selected_guid}",
+                hide_index=True,
+                use_container_width=True,
+                disabled=(not edit_mode),
+                num_rows="fixed",
+                column_config=col_config
+            )
+
+            st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+
+            # ── Single Smart Register Button ─────────────────────────────────
+            can_register = st.session_state.user_role == "Administrator"
+            active_df = df_hist[df_hist["Active"] == 1]
+
+            _connectors  = st.session_state.integration_connectors
+            _purview_cfg = _connectors.get("Microsoft Purview", {})
+            _db_cfg      = _connectors.get("Databricks Unity", {})
+            _purview_on  = _purview_cfg.get("status") == "Connected"
+            _db_on       = _db_cfg.get("status") == "Connected"
+
+            # Determine which platform is connected
+            if _purview_on:
+                _platform_name = "Microsoft Purview"
+                _platform_icon = "☁️"
+            elif _db_on:
+                _platform_name = "Databricks Unity Catalog"
+                _platform_icon = "🔷"
+            else:
+                _platform_name = None
+                _platform_icon = "🔗"
+
+            # Registration card
+            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+
+            _btn_disabled = not can_register or not _platform_name or active_df.empty
+            _btn_label = f"{_platform_icon} Register {len(active_df)} Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
+            _btn_help = "🔒 No permission" if not can_register else ("No integration connected — go to Integrations & API" if not _platform_name else f"Publish active terms to {_platform_name}")
+
+            if st.button(_btn_label, type="primary", use_container_width=True, disabled=_btn_disabled, help=_btn_help, key="hub_register_btn"):
                 if _purview_on:
-                    _platform_name = "Microsoft Purview"
-                    _platform_icon = "☁️"
-                elif _db_on:
-                    _platform_name = "Databricks Unity Catalog"
-                    _platform_icon = "🔷"
-                else:
-                    _platform_name = None
-                    _platform_icon = "🔗"
+                    # ── Purview Registration Logic ────────────────────────
+                    creds = st.session_state.get("connector_creds", {})
+                    account_name  = creds.get("purview_account_name", "")
+                    tenant_id     = creds.get("purview_tenant_id", "")
+                    client_id     = creds.get("purview_client_id", "")
+                    client_secret = creds.get("purview_client_secret", "")
 
-                # Registration card
-                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-
-                _btn_disabled = not can_register or not _platform_name or active_df.empty
-                _btn_label = f"{_platform_icon} Register {len(active_df)} Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
-                _btn_help = "🔒 No permission" if not can_register else ("No integration connected — go to Integrations & API" if not _platform_name else f"Publish active terms to {_platform_name}")
-
-                if st.button(_btn_label, type="primary", use_container_width=True, disabled=_btn_disabled, help=_btn_help, key="hub_register_btn"):
-                    if _purview_on:
-                        # ── Purview Registration Logic ────────────────────────
-                        creds = st.session_state.get("connector_creds", {})
-                        account_name  = creds.get("purview_account_name", "")
-                        tenant_id     = creds.get("purview_tenant_id", "")
-                        client_id     = creds.get("purview_client_id", "")
-                        client_secret = creds.get("purview_client_secret", "")
-
-                        if not all([account_name, tenant_id, client_id, client_secret]):
-                            st.error("Purview credentials are missing. Reconnect in **Integrations & API**.")
+                    if not all([account_name, tenant_id, client_id, client_secret]):
+                        st.error("Purview credentials are missing. Reconnect in **Integrations & API**.")
+                    else:
+                        connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
+                        ok, auth_msg = connector.authenticate()
+                        if not ok:
+                            st.error(f"Authentication failed: {auth_msg}")
                         else:
-                            connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
-                            ok, auth_msg = connector.authenticate()
-                            if not ok:
-                                st.error(f"Authentication failed: {auth_msg}")
-                            else:
-                                try:
-                                    glossaries = connector.get_glossaries()
-                                    if isinstance(glossaries, list) and glossaries:
-                                        glossary_guid = glossaries[0].get("guid", "")
-                                    elif isinstance(glossaries, dict):
-                                        glossary_guid = glossaries.get("guid", "")
-                                    else:
-                                        glossary_guid = ""
-                                except Exception as ge:
-                                    st.error(f"Could not fetch glossaries: {ge}")
-                                    glossary_guid = ""
-
-                                if not glossary_guid:
-                                    st.error("No glossary found in Purview. Please create a glossary first.")
+                            try:
+                                glossaries = connector.get_glossaries()
+                                if isinstance(glossaries, list) and glossaries:
+                                    glossary_guid = glossaries[0].get("guid", "")
+                                elif isinstance(glossaries, dict):
+                                    glossary_guid = glossaries.get("guid", "")
                                 else:
-                                    col_guid_lookup = {}
-                                    for _tid, _meta in st.session_state.get("tables_metadata", {}).items():
-                                        for _cname, _cguid in (_meta.get("column_guids") or {}).items():
+                                    glossary_guid = ""
+                            except Exception as ge:
+                                st.error(f"Could not fetch glossaries: {ge}")
+                                glossary_guid = ""
+
+                            if not glossary_guid:
+                                st.error("No glossary found in Purview. Please create a glossary first.")
+                            else:
+                                col_guid_lookup = {}
+                                for _tid, _meta in st.session_state.get("tables_metadata", {}).items():
+                                    for _cname, _cguid in (_meta.get("column_guids") or {}).items():
+                                        col_guid_lookup[_cname.upper()] = _cguid
+
+                                _table_name = (active_df.iloc[0].get("table_name") or active_df.iloc[0].get("Physical Term", "")).upper() if not active_df.empty else ""
+                                _real_table_guid = None
+                                for _tid, _meta in st.session_state.get("tables_metadata", {}).items():
+                                    if (_meta.get("name") or "").upper() == _table_name or (_meta.get("name") or "").upper() in asset_to_view.upper():
+                                        _real_table_guid = _tid
+                                        break
+
+                                if _real_table_guid:
+                                    try:
+                                        with st.spinner("Fetching column schema from Purview…"):
+                                            live_cols = connector.get_table_columns_with_guids(_real_table_guid)
+                                        for _cname, _cguid in live_cols.items():
                                             col_guid_lookup[_cname.upper()] = _cguid
-
-                                    _table_name = (active_df.iloc[0].get("table_name") or active_df.iloc[0].get("Physical Term", "")).upper() if not active_df.empty else ""
-                                    _real_table_guid = None
-                                    for _tid, _meta in st.session_state.get("tables_metadata", {}).items():
-                                        if (_meta.get("name") or "").upper() == _table_name or (_meta.get("name") or "").upper() in asset_to_view.upper():
-                                            _real_table_guid = _tid
-                                            break
-
-                                    if _real_table_guid:
-                                        try:
-                                            with st.spinner("Fetching column schema from Purview…"):
-                                                live_cols = connector.get_table_columns_with_guids(_real_table_guid)
+                                    except Exception:
+                                        pass
+                                else:
+                                    try:
+                                        with st.spinner("Searching Purview for table schema…"):
+                                            _found_table_guid = connector.search_entity_by_name(asset_to_view)
+                                        if _found_table_guid:
+                                            live_cols = connector.get_table_columns_with_guids(_found_table_guid)
                                             for _cname, _cguid in live_cols.items():
                                                 col_guid_lookup[_cname.upper()] = _cguid
-                                        except Exception:
-                                            pass
-                                    else:
+                                    except Exception:
+                                        pass
+
+                                registered, errors = 0, []
+                                with st.spinner("Registering terms to Purview…"):
+                                    for _, row in active_df.iterrows():
+                                        term_name     = str(row.get("Business Term") or row.get("Glossary Term", "")).strip()
+                                        definition    = str(row.get("Description") or row.get("Definition / Description", "")).strip()
+                                        physical_term = str(row.get("Physical Term") or row.get("Original Name", "")).strip()
+                                        if not term_name:
+                                            continue
                                         try:
-                                            with st.spinner("Searching Purview for table schema…"):
-                                                _found_table_guid = connector.search_entity_by_name(asset_to_view)
-                                            if _found_table_guid:
-                                                live_cols = connector.get_table_columns_with_guids(_found_table_guid)
-                                                for _cname, _cguid in live_cols.items():
-                                                    col_guid_lookup[_cname.upper()] = _cguid
-                                        except Exception:
-                                            pass
+                                            purview_entity_guid = col_guid_lookup.get(physical_term.upper())
+                                            if not purview_entity_guid and physical_term:
+                                                purview_entity_guid = connector.search_entity_by_name(physical_term)
+                                                if purview_entity_guid:
+                                                    col_guid_lookup[physical_term.upper()] = purview_entity_guid
 
-                                    registered, errors = 0, []
-                                    with st.spinner("Registering terms to Purview…"):
-                                        for _, row in active_df.iterrows():
-                                            term_name     = str(row.get("Business Term") or row.get("Glossary Term", "")).strip()
-                                            definition    = str(row.get("Description") or row.get("Definition / Description", "")).strip()
-                                            physical_term = str(row.get("Physical Term") or row.get("Original Name", "")).strip()
-                                            if not term_name:
-                                                continue
-                                            try:
-                                                purview_entity_guid = col_guid_lookup.get(physical_term.upper())
-                                                if not purview_entity_guid and physical_term:
-                                                    purview_entity_guid = connector.search_entity_by_name(physical_term)
-                                                    if purview_entity_guid:
-                                                        col_guid_lookup[physical_term.upper()] = purview_entity_guid
+                                            existing_term_guid = connector.get_term_by_name(term_name)
+                                            if existing_term_guid:
+                                                connector.update_glossary_term(existing_term_guid, term_name, definition, glossary_guid)
+                                                final_term_guid = existing_term_guid
+                                            else:
+                                                result = connector.create_glossary_term(term_name, definition, glossary_guid)
+                                                final_term_guid = result.get("guid") if isinstance(result, dict) else None
 
-                                                existing_term_guid = connector.get_term_by_name(term_name)
-                                                if existing_term_guid:
-                                                    connector.update_glossary_term(existing_term_guid, term_name, definition, glossary_guid)
-                                                    final_term_guid = existing_term_guid
-                                                else:
-                                                    result = connector.create_glossary_term(term_name, definition, glossary_guid)
-                                                    final_term_guid = result.get("guid") if isinstance(result, dict) else None
-
-                                                if final_term_guid and purview_entity_guid:
-                                                    connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
-                                                    registered += 1
-                                                elif final_term_guid:
-                                                    errors.append(f"{term_name}: Column '{physical_term}' not found in Purview — term saved but not linked")
-                                                    registered += 1
-                                                else:
-                                                    errors.append(f"{term_name}: Could not obtain term GUID after create/update")
-                                            except Exception as ex:
-                                                errors.append(f"{term_name}: {str(ex)}")
-                                    if errors:
-                                        st.warning(f"Registered {registered} term(s) with {len(errors)} error(s):\n" + "\n".join(f"• {e}" for e in errors))
-                                    else:
-                                        st.success(f"✅ {registered} active term(s) from **{asset_to_view}** registered to Purview.")
-
-                    elif _db_on:
-                        # ── Databricks Unity Catalog Logic ────────────────────
-                        _db_browse   = DatabricksUnityConnector(_db_cfg.get("api_endpoint", ""), _db_cfg.get("api_token", ""))
-                        _meta_entry  = st.session_state.get("tables_metadata", {}).get(selected_guid, {})
-                        uc_full_name = _meta_entry.get("qualifiedName", "")
-
-                        _whs, _wh_err = _db_browse.list_sql_warehouses()
-                        _wh_id = ""
-                        if not _wh_err and _whs:
-                            _running = [w for w in _whs if w["state"] == "RUNNING"]
-                            _wh_id = (_running or _whs)[0]["id"]
-
-                        if not uc_full_name:
-                            st.warning("No table selected. Please select a table in **Asset Search** first.")
-                        else:
-                            _tag_pairs = []
-                            for _, _row in active_df.iterrows():
-                                _phys = str(_row.get("Physical Term") or _row.get("Original Name", "")).strip()
-                                _biz  = str(_row.get("Business Term") or _row.get("Glossary Term", "")).strip()
-                                if _phys and _biz:
-                                    _tag_pairs.append({"tag_name": _phys, "tag_value": _biz})
-                            if not _tag_pairs:
-                                st.warning("No column/business-term pairs found in the active records.")
-                            else:
-                                with st.spinner(f"Pushing {len(_tag_pairs)} tag(s) to Unity Catalog…"):
-                                    _applied, _skipped, _errs = _db_browse.push_tags_to_table(uc_full_name, _tag_pairs, warehouse_id=_wh_id)
-                                if _errs:
-                                    st.error("Push failed:\n" + "\n".join(f"• {e}" for e in _errs))
+                                            if final_term_guid and purview_entity_guid:
+                                                connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
+                                                registered += 1
+                                            elif final_term_guid:
+                                                errors.append(f"{term_name}: Column '{physical_term}' not found in Purview — term saved but not linked")
+                                                registered += 1
+                                            else:
+                                                errors.append(f"{term_name}: Could not obtain term GUID after create/update")
+                                        except Exception as ex:
+                                            errors.append(f"{term_name}: {str(ex)}")
+                                if errors:
+                                    st.warning(f"Registered {registered} term(s) with {len(errors)} error(s):\n" + "\n".join(f"• {e}" for e in errors))
                                 else:
-                                    if _applied:
-                                        st.success(f"✅ {_applied} tag(s) pushed to `{uc_full_name}` in Unity Catalog.")
-                                    if _skipped:
-                                        st.info(f"⏭ {len(_skipped)} tag(s) already exist and were skipped: {', '.join(f'`{s}`' for s in _skipped)}")
-                                    if not _applied and not _skipped:
-                                        st.warning("No tags were pushed.")
+                                    st.success(f"✅ {registered} active term(s) from **{asset_to_view}** registered to Purview.")
+
+                elif _db_on:
+                    # ── Databricks Unity Catalog Logic ────────────────────
+                    _db_browse   = DatabricksUnityConnector(_db_cfg.get("api_endpoint", ""), _db_cfg.get("api_token", ""))
+                    _meta_entry  = st.session_state.get("tables_metadata", {}).get(selected_guid, {})
+                    uc_full_name = _meta_entry.get("qualifiedName", "")
+
+                    _whs, _wh_err = _db_browse.list_sql_warehouses()
+                    _wh_id = ""
+                    if not _wh_err and _whs:
+                        _running = [w for w in _whs if w["state"] == "RUNNING"]
+                        _wh_id = (_running or _whs)[0]["id"]
+
+                    if not uc_full_name:
+                        st.warning("No table selected. Please select a table in **Asset Search** first.")
+                    else:
+                        _tag_pairs = []
+                        for _, _row in active_df.iterrows():
+                            _phys = str(_row.get("Physical Term") or _row.get("Original Name", "")).strip()
+                            _biz  = str(_row.get("Business Term") or _row.get("Glossary Term", "")).strip()
+                            if _phys and _biz:
+                                _tag_pairs.append({"tag_name": _phys, "tag_value": _biz})
+                        if not _tag_pairs:
+                            st.warning("No column/business-term pairs found in the active records.")
+                        else:
+                            with st.spinner(f"Pushing {len(_tag_pairs)} tag(s) to Unity Catalog…"):
+                                _applied, _skipped, _errs = _db_browse.push_tags_to_table(uc_full_name, _tag_pairs, warehouse_id=_wh_id)
+                            if _errs:
+                                st.error("Push failed:\n" + "\n".join(f"• {e}" for e in _errs))
+                            else:
+                                if _applied:
+                                    st.success(f"✅ {_applied} tag(s) pushed to `{uc_full_name}` in Unity Catalog.")
+                                if _skipped:
+                                    st.info(f"⏭ {len(_skipped)} tag(s) already exist and were skipped: {', '.join(f'`{s}`' for s in _skipped)}")
+                                if not _applied and not _skipped:
+                                    st.warning("No tags were pushed.")
 
 # ============================================
 # SEMANTIC SEARCH TAB
