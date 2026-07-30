@@ -499,9 +499,12 @@ def _img_tag(filename, size=24):
     except FileNotFoundError:
         return "🔌"
 
-@st.dialog("Configure Integration")
 def _configure_integration_dialog(name):
-    """Dialog to configure integration connector credentials."""
+    """Set flag to open inline config for this connector."""
+    st.session_state["_open_integration_config"] = name
+
+def _render_inline_integration_config(name):
+    """Render integration config inline (replaces st.dialog)."""
     cfg = st.session_state.integration_connectors[name]
     st.markdown(f"**{name}** — {cfg['desc']}")
     st.divider()
@@ -524,28 +527,28 @@ def _configure_integration_dialog(name):
         st.text_input("API Endpoint", value=cfg['api_endpoint'], key=f"int_ep_{name}")
         st.text_input("API Token / Secret", type="password", value=cfg['api_token'], key=f"int_tk_{name}")
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns([2, 2, 1])
     with c1:
-        if st.button("Save & Connect", type="primary", use_container_width=True):
+        if st.button("Save & Connect", type="primary", use_container_width=True, key=f"int_save_{name}"):
             if name == "Microsoft Purview":
                 account_name = st.session_state[f"mp_ac_{name}"]
                 tenant_id = st.session_state[f"mp_te_{name}"]
                 client_id = st.session_state[f"mp_ci_{name}"]
                 client_secret = st.session_state[f"mp_cs_{name}"]
-                
+
                 st.session_state.connector_creds.update({
-                    'purview_account_name': account_name, 
-                    'purview_tenant_id': tenant_id, 
-                    'purview_client_id': client_id, 
+                    'purview_account_name': account_name,
+                    'purview_tenant_id': tenant_id,
+                    'purview_client_id': client_id,
                     'purview_client_secret': client_secret
                 })
                 connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
                 success, msg = connector.authenticate()
                 if success:
                     st.session_state.is_authenticated = True
-                    try: 
+                    try:
                         st.session_state.purview_collections = connector.get_collections()
-                    except: 
+                    except:
                         pass
                 else:
                     st.error(f"Failed to authenticate: {msg}")
@@ -569,16 +572,22 @@ def _configure_integration_dialog(name):
             from datetime import datetime
             st.session_state.integration_connectors[name]['status'] = 'Connected'
             st.session_state.integration_connectors[name]['last_sync'] = datetime.now().strftime("%I:%M %p")
+            st.session_state.pop("_open_integration_config", None)
             st.success(f"Connected to {name} successfully!")
             st.rerun()
     with c2:
         if cfg['status'] == 'Connected':
-            if st.button("Disconnect", use_container_width=True):
+            if st.button("Disconnect", use_container_width=True, key=f"int_disc_{name}"):
                 st.session_state.integration_connectors[name]['status'] = 'Not connected'
                 st.session_state.integration_connectors[name]['last_sync'] = ''
                 if name == "Microsoft Purview":
                     st.session_state.is_authenticated = False
+                st.session_state.pop("_open_integration_config", None)
                 st.rerun()
+    with c3:
+        if st.button("✕ Close", use_container_width=True, key=f"int_close_{name}"):
+            st.session_state.pop("_open_integration_config", None)
+            st.rerun()
 
 def render_integrations_tab():
     render_dashboard_header("Integrations & API")
@@ -635,26 +644,38 @@ def render_integrations_tab():
         for i, name in enumerate(row_names):
             _render_connector_card(cols[i], name, connectors[name])
 
-@st.dialog("Review Term")
+    # ── Inline config panel (replaces st.dialog) ─────────────────────────────
+    _open_cfg = st.session_state.get("_open_integration_config")
+    if _open_cfg and _open_cfg in connectors:
+        st.divider()
+        _render_inline_integration_config(_open_cfg)
+
 def _review_term_dialog(idx):
+    """Set flag to show inline review for this term."""
+    st.session_state["_open_review_term"] = idx
+
+def _render_inline_review_term(idx):
+    """Render term review inline (replaces st.dialog)."""
     item = st.session_state.review_queue[idx]
     st.markdown(f"### Review: {item['term']}")
     st.write(f"**Asset:** {item['asset']}")
     st.write(f"**Requested By:** {item['requester']}")
     st.write(f"**Description:** {item['description']}")
-    
+
     st.divider()
     comment = st.text_area("Add a comment (optional)", key=f"rev_com_{idx}")
-    
+
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Approve", type="primary", use_container_width=True):
+        if st.button("Approve", type="primary", use_container_width=True, key=f"rev_approve_{idx}"):
             st.session_state.review_queue[idx]['status'] = 'Approved'
+            st.session_state.pop("_open_review_term", None)
             st.success("Term approved!")
             st.rerun()
     with c2:
-        if st.button("Reject", use_container_width=True):
+        if st.button("Reject", use_container_width=True, key=f"rev_reject_{idx}"):
             st.session_state.review_queue[idx]['status'] = 'Rejected'
+            st.session_state.pop("_open_review_term", None)
             st.rerun()
 
 def render_review_tab():
@@ -1034,7 +1055,7 @@ def render_review_tab():
                                             st.error(msg)
                                         st.rerun()
                                 with bmore:
-                                    with st.popover("···", use_container_width=True):
+                                    with st.expander("···"):
                                         st.markdown("**Additional actions**")
                                         st.text_input(
                                             "Comment",
@@ -1075,7 +1096,7 @@ def render_review_tab():
                                             st.error(msg)
                                         st.rerun()
                                 with bmerge:
-                                    with st.popover("···", use_container_width=True):
+                                    with st.expander("···"):
                                         st.text_input(
                                             "Comment",
                                             placeholder="Approver comment…",
@@ -1098,7 +1119,7 @@ def render_review_tab():
                                             st.error(msg)
                                         st.rerun()
                                 with bm:
-                                    with st.popover("···", use_container_width=True):
+                                    with st.expander("···"):
                                         st.markdown("**Additional actions**")
                                         st.text_input(
                                             "Comment",
