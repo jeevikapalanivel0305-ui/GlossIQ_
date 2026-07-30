@@ -541,13 +541,19 @@ class WorkflowManager:
         if not entry:
             return False, "Term not found in queue"
 
-        # Block if this term name already exists as Approved in the audit log
+        # Block if this exact term (same name + same physical_term + same table) already Approved
         audit_log = cls.load_audit_log()
         entry_name = (entry.get("term_name") or "").strip().lower()
+        entry_phys = (entry.get("physical_term") or "").strip().lower()
+        entry_table = (entry.get("table_name") or "").strip().lower()
+        entry_source = entry.get("source", "")
         prior = next(
             (e for e in audit_log
-             if e.get("status") == "Approved"
-             and (e.get("term_name") or "").strip().lower() == entry_name),
+             if e.get("status") in ("Approved", "Approved (Merged)")
+             and (e.get("term_name") or "").strip().lower() == entry_name
+             and (e.get("physical_term") or "").strip().lower() == entry_phys
+             and (e.get("table_name") or "").strip().lower() == entry_table
+             and (e.get("source") or "") == entry_source),
             None,
         )
         if prior:
