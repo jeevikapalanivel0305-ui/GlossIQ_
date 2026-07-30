@@ -2275,7 +2275,7 @@ def render_master_glossary_tab():
             unsafe_allow_html=True
         )
 
-        # ── Edit toggle ───────────────────────────────────────────────────────
+        # ── Edit toggle ───────────────────────────────────────────────
         _, tb_right = st.columns([3, 1])
         with tb_right:
             edit_mode = st.toggle("✏️ Edit", key="hub_edit_mode", value=False)
@@ -2368,7 +2368,7 @@ def render_master_glossary_tab():
                     "table_guid": None, "entity_guid": None,
                     "table_name": None, "related_column": None, "Confidence (%)": None
                 }
-                
+                    
                 priority_cols = ["Active", "Version", "Status"]
                 desired_order = ["Type", "Physical Term", "Business Term", "Description", "Source", "Stored At"]
                 middle_cols = [c for c in desired_order if c in df_hist.columns and c not in priority_cols]
