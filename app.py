@@ -2546,21 +2546,6 @@ def render_master_glossary_tab():
                 column_config=col_config
             )
 
-            # ── Lineage shortcuts for approved terms ─────────────────────────
-            _active_terms = df_hist[df_hist["Active"] == 1]
-            if "Business Term" in _active_terms.columns:
-                _unique_bterms = _active_terms["Business Term"].dropna().unique().tolist()
-                if _unique_bterms:
-                    st.markdown("##### 🔗 View Lineage")
-                    _lin_cols = st.columns(min(len(_unique_bterms), 4))
-                    for idx, bt in enumerate(_unique_bterms):
-                        with _lin_cols[idx % min(len(_unique_bterms), 4)]:
-                            if st.button(f"🔍 {bt}", key=f"hub_lin_{idx}", use_container_width=True,
-                                         help=f"View lineage for {bt}"):
-                                st.session_state["lineage_term_selector"] = bt
-                                st.session_state["selected_tab"] = "Lineage Map"
-                                st.rerun()
-
             st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
             # ── Single Smart Register Button ─────────────────────────────────
