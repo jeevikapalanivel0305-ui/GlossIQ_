@@ -167,6 +167,82 @@ def get_next_version(table_guid, physical_term):
     return (row["max_ver"] or 0) + 1
 
 
+def sync_from_audit_log(audit_log_path):
+    """Rebuild SQLite DB from audit_log.json if DB is empty but audit log has data."""
+    if not os.path.exists(audit_log_path):
+        return 0
+    try:
+        with open(audit_log_path, 'r') as f:
+            audit_log = json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return 0
+
+    if not audit_log:
+        return 0
+
+    conn = _get_conn()
+    count = conn.execute("SELECT COUNT(*) as cnt FROM glossary_terms").fetchone()["cnt"]
+    if count > 0:
+        conn.close()
+        return 0  # Already has data
+
+    # Process all decided entries from audit log
+    decided = sorted(
+        [e for e in audit_log if e.get("status") in ("Approved", "Approved (Merged)", "Rejected")],
+        key=lambda x: x.get("decision_date", ""),
+    )
+
+    imported = 0
+    for entry in decided:
+        raw_table = (entry.get("table_name") or "").strip()
+        safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
+        asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{entry.get('term_id', 'unknown')}"
+        table_name = raw_table.upper() if raw_table else "Workflow Terms"
+        phys_term = entry.get("physical_term") or entry.get("term_name") or ""
+        is_approved = entry.get("status") in ("Approved", "Approved (Merged)")
+
+        # Deactivate previous active record for this physical term (SCD Type 2)
+        if is_approved:
+            conn.execute("""
+                UPDATE glossary_terms 
+                SET active = 0 
+                WHERE table_guid = ? AND LOWER(physical_term) = LOWER(?) AND active = 1
+            """, (asset_guid, phys_term))
+
+        # Get next version
+        row = conn.execute("""
+            SELECT MAX(version) as max_ver FROM glossary_terms
+            WHERE table_guid = ? AND LOWER(physical_term) = LOWER(?)
+        """, (asset_guid, phys_term)).fetchone()
+        next_ver = (row["max_ver"] or 0) + 1
+
+        conn.execute("""
+            INSERT INTO glossary_terms 
+            (entity_guid, table_guid, table_name, business_term, physical_term,
+             description, type, source, confidence, active, version, status, stored_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            entry.get("term_id", ""),
+            asset_guid,
+            table_name,
+            entry.get("term_name", ""),
+            phys_term,
+            entry.get("definition", ""),
+            entry.get("term_type", "Column"),
+            entry.get("source", "AI Suggester"),
+            entry.get("confidence_score", 0),
+            1 if is_approved else 0,
+            next_ver,
+            entry.get("status", ""),
+            entry.get("decision_date", datetime.now().isoformat()),
+        ))
+        imported += 1
+
+    conn.commit()
+    conn.close()
+    return imported
+
+
 def sync_from_master_json(master_path):
     """One-time migration: import existing glossary_master.json into SQLite."""
     if not os.path.exists(master_path):

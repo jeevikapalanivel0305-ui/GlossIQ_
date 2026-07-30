@@ -239,6 +239,14 @@ if 'queue_cleared_this_session' not in st.session_state:
 if 'session_start_time' not in st.session_state:
     st.session_state.session_start_time = datetime.now().isoformat()
 
+# ── Auto-sync: rebuild SQLite DB from audit log if DB is empty ─────────────
+if 'db_synced_this_session' not in st.session_state:
+    _audit_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "audit_log.json")
+    _master_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "glossary_master.json")
+    glossary_db.sync_from_audit_log(_audit_path)
+    glossary_db.sync_from_master_json(_master_path)
+    st.session_state.db_synced_this_session = True
+
 # Integration Connectors State – reinitialise if 'image' key is missing (migration guard)
 _CONNECTOR_DEFAULTS = {
     'Microsoft Purview': {'letter': 'MP',  'image': 'purview.jfif',    'desc': 'Data Governance Map','color_bg': '#EFF6FF', 'color_txt': '#1D4ED8', 'push': True,  'pull': True,  'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
@@ -2101,7 +2109,23 @@ def render_master_glossary_tab():
     render_dashboard_header("Glossary Hub")
     st.markdown('<div class="workbench-header"><div class="accent-line"></div><h1 class="workbench-title">Glossary Hub</h1><p class="workbench-desc">Enterprise Source of Truth — All approved, versioned glossary records with full audit history.</p></div>', unsafe_allow_html=True)
     
+    # Check both JSON store and SQLite database for data
     summaries = PersistenceManager.get_all_stored_summaries()
+    db_tables = glossary_db.get_all_table_summaries()
+    
+    # Merge: prefer SQLite as source of truth, fall back to JSON
+    if db_tables:
+        # Build summaries from SQLite
+        summaries = []
+        for t in db_tables:
+            summaries.append({
+                "Asset GUID": t["table_guid"],
+                "Asset Name": t["table_name"],
+                "Active Terms": t["active_terms"],
+                "Total History": t["total_history"],
+                "Last Updated": t["last_updated"],
+                "Version": 1,
+            })
     
     if not summaries:
         st.info("No approved glossary records found. Generate suggestions in 'Glossary AI' to get started.")
