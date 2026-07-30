@@ -2324,8 +2324,15 @@ def render_master_glossary_tab():
             elif active_filter == "Non-Active":
                 db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=_db_source_filter)
             else:
-                # Default: show all currently active approved terms
-                db_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter)
+                # Check if any terms were approved in this session
+                _session_start = st.session_state.get("session_start_time", "")
+                _session_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter, since=_session_start) if _session_start else []
+                if _session_records:
+                    # Terms were approved this session — show only newly approved
+                    db_records = _session_records
+                else:
+                    # Fresh session, no new approvals — show all active terms
+                    db_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter)
 
             # Fallback to JSON store if SQLite is empty (backward compatibility)
             if not db_records:
