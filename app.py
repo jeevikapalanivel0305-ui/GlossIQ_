@@ -2232,6 +2232,13 @@ def render_master_glossary_tab():
                 if show_all_colls:
                     st.caption("Uncheck 'See more' to hide")
 
+        # ── Active / Non-Active filter ────────────────────────────────────────
+        with st.expander("Status", expanded=True):
+            active_filter = st.radio(
+                "Show records", ["Active", "Non-Active", "All"],
+                key="hub_active_filter", label_visibility="collapsed"
+            )
+
         # ── Classification filter ──────────────────────────────────────────────
         with st.expander("Classification", expanded=False):
             classification_options = ["All"] + all_classifications if all_classifications else ["All", "PII", "Confidential", "Public"]
@@ -2288,7 +2295,7 @@ def render_master_glossary_tab():
                 _db_source_filter = "AI Suggester"
 
             # Fetch from SQLite: active terms or full history
-            if show_history:
+            if show_history or active_filter != "Active":
                 db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=_db_source_filter)
             else:
                 db_records = glossary_db.get_active_terms(table_guid=selected_guid, source_filter=_db_source_filter)
@@ -2303,10 +2310,13 @@ def render_master_glossary_tab():
                         df_hist = df_hist[df_hist["Source"] == "Databricks Unity Catalog"]
                     elif _hub_purview_connected and not _hub_uc_connected and "Source" in df_hist.columns:
                         df_hist = df_hist[df_hist["Source"] != "Databricks Unity Catalog"]
-                    if not show_history:
+                    # Apply active/non-active filter
+                    if active_filter == "Active":
                         df_hist = df_hist[df_hist["Active"] == 1]
                         if "Status" in df_hist.columns:
                             df_hist = df_hist[df_hist["Status"] != "Rejected"]
+                    elif active_filter == "Non-Active":
+                        df_hist = df_hist[df_hist["Active"] == 0]
                 else:
                     df_hist = pd.DataFrame()
             else:
@@ -2328,6 +2338,11 @@ def render_master_glossary_tab():
                     "table_guid": "table_guid",
                     "entity_guid": "entity_guid",
                 })
+                # Apply active/non-active filter on SQLite data
+                if active_filter == "Active":
+                    df_hist = df_hist[df_hist["Active"] == 1]
+                elif active_filter == "Non-Active":
+                    df_hist = df_hist[df_hist["Active"] == 0]
 
             if df_hist.empty:
                 st.info("No approved records found for this asset." if not show_history else "No records found in history.")
