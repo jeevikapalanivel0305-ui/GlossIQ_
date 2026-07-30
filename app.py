@@ -1412,7 +1412,7 @@ def render_lineage_tab():
     render_dashboard_header("Lineage Map")
     st.markdown(
         '<div class="workbench-header"><div class="accent-line"></div>'
-        '<h1 class="workbench-title">Business Term Lineage</h1>'
+        '<h1 class="workbench-title">Business Lineage</h1>'
         '<p class="workbench-desc">End-to-end lineage: '
         '<strong>Source</strong> → <strong>Asset (Table)</strong> → <strong>Attribute (Column)</strong> → <strong>Business Term</strong>, '
         'with Domain ownership and confidence score.</p>'
@@ -1637,7 +1637,7 @@ def render_lineage_tab():
 
     mermaid_lineage = '\n'.join(lines)
 
-    # ── Render: Business Term Lineage diagram ────────────────────────────────
+    # ── Render: Business Lineage diagram ──────────────────────────────────────
     st.markdown("##### Lineage Graph")
     _render_mermaid(mermaid_lineage, height=480)
 
