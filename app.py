@@ -2412,8 +2412,6 @@ def render_master_glossary_tab():
             _db_source_filter = None
             if _hub_uc_connected and not _hub_purview_connected:
                 _db_source_filter = "Databricks Unity Catalog"
-            elif _hub_purview_connected and not _hub_uc_connected:
-                _db_source_filter = "MS Purview"
 
             # Determine if approvals happened this session
             _has_new_approvals = st.session_state.get("hub_approved_this_session", False)
@@ -2421,7 +2419,7 @@ def render_master_glossary_tab():
 
             # Fetch from SQLite: active terms or full history
             if show_history or active_filter == "All":
-                db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=_db_source_filter)
+                db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=None)
             elif active_filter == "Non-Active":
                 db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=_db_source_filter)
             elif _has_new_approvals and _session_start:
