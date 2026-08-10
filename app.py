@@ -2419,7 +2419,7 @@ def render_master_glossary_tab():
 
             # Fetch from SQLite: active terms or full history
             if show_history or active_filter == "All":
-                db_records = glossary_db.get_all_terms(table_guid=None, source_filter=None)
+                db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=None)
             elif active_filter == "Non-Active":
                 db_records = glossary_db.get_all_terms(table_guid=selected_guid, source_filter=_db_source_filter)
             elif _has_new_approvals and _session_start:
