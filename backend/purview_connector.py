@@ -533,22 +533,54 @@ class PurviewConnector:
             raise Exception(f"Delete term failed: {str(e)}")
 
     def add_classification_to_entity(self, entity_guid, classification_name, debug=False):
-        """Add a classification to an entity"""
+        """Add a classification to an entity. Creates the classification type if it doesn't exist."""
         success, msg = self.authenticate(debug=debug)
         if not success:
             raise Exception(f"Authentication failed: {msg}")
 
+        # Step 1: Ensure the classification type exists in Purview
+        self._ensure_classification_type(classification_name)
+
+        # Step 2: Apply classification to entity
         url = f"{self.base_url}/datamap/api/atlas/v2/entity/guid/{entity_guid}/classifications"
         payload = [{"typeName": classification_name}]
 
         try:
             r = requests.post(url, headers=self._headers(), json=payload, timeout=30)
             if r.status_code not in (200, 201, 204):
-                if "already exists" in r.text.lower():
+                if "already" in r.text.lower():
                     return True
-                # Silently fail if classification doesn't exist in Purview (to avoid breaking the flow)
-                return False
+                # Try alternate: bulk classification
+                url2 = f"{self.base_url}/datamap/api/atlas/v2/entity/bulk/classification"
+                payload2 = {
+                    "classification": {"typeName": classification_name},
+                    "entityGuids": [entity_guid]
+                }
+                r2 = requests.post(url2, headers=self._headers(), json=payload2, timeout=30)
+                if r2.status_code not in (200, 201, 204):
+                    if "already" in r2.text.lower():
+                        return True
+                    return False
             return True
+        except Exception:
+            return False
+
+    def _ensure_classification_type(self, classification_name):
+        """Create the classification type in Purview if it doesn't already exist."""
+        url = f"{self.base_url}/datamap/api/atlas/v2/types/typedefs"
+        payload = {
+            "classificationDefs": [{
+                "name": classification_name,
+                "description": f"Data classification: {classification_name}",
+                "category": "CLASSIFICATION",
+                "superTypes": [],
+                "attributeDefs": []
+            }]
+        }
+        try:
+            r = requests.post(url, headers=self._headers(), json=payload, timeout=30)
+            # 409 = already exists, that's fine
+            return r.status_code in (200, 201, 409)
         except Exception:
             return False
 

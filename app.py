@@ -2688,7 +2688,9 @@ def render_master_glossary_tab():
 
                                             # Push classification to Purview entity
                                             if classification and purview_entity_guid:
-                                                connector.add_classification_to_entity(purview_entity_guid, classification)
+                                                cls_ok = connector.add_classification_to_entity(purview_entity_guid, classification)
+                                                if not cls_ok:
+                                                    errors.append(f"{term_name}: Classification '{classification}' could not be applied to entity")
 
                                             registered += 1
                                         except Exception as ex:
