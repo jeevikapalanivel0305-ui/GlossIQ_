@@ -2702,6 +2702,25 @@ def render_master_glossary_tab():
                                                 if not cls_ok:
                                                     errors.append(f"{term_name}: Classification '{classification}' could not be applied to entity")
 
+                                            # Store registration in Glossary Hub DB for history
+                                            _term_type = str(row.get("Type", "Column") or "Column")
+                                            _source = str(row.get("Source", "MS Purview") or "MS Purview")
+                                            glossary_db.store_term(
+                                                entity_guid=purview_entity_guid or final_term_guid or "",
+                                                table_guid=selected_guid,
+                                                table_name=asset_to_view,
+                                                business_term=term_name,
+                                                physical_term=physical_term,
+                                                description=definition,
+                                                term_type=_term_type,
+                                                source=_source,
+                                                confidence=int(row.get("Confidence (%)", 0) or 0) if str(row.get("Confidence (%)", 0)) != 'nan' else 0,
+                                                active=1,
+                                                version=glossary_db.get_next_version(selected_guid, physical_term),
+                                                status="Registered",
+                                                classification=classification,
+                                            )
+
                                             registered += 1
                                         except Exception as ex:
                                             errors.append(f"{term_name}: {str(ex)}")
