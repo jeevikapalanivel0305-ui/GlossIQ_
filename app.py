@@ -727,6 +727,15 @@ def render_review_tab():
     if _uc_on:
         _tab1_audit = [e for e in _tab1_audit if e.get("source") == "Databricks Unity Catalog"]
 
+    # ── Ensure Purview classification types are cached ──
+    if st.session_state.get("is_authenticated") and not st.session_state.get("purview_classification_types"):
+        try:
+            _creds = st.session_state.get("connector_creds", {})
+            _pc = PurviewConnector(_creds.get("purview_account_name",""), _creds.get("purview_tenant_id",""), _creds.get("purview_client_id",""), _creds.get("purview_client_secret",""))
+            st.session_state.purview_classification_types = _pc.get_classification_types()
+        except Exception:
+            pass
+
     # ── Inner workflow tabs ────────────────────────────────────────────────────
     wf_tab1, wf_tab2, wf_tab3 = st.tabs(
         ["📋 Approval Queue", "➕ User Suggestion", "📜 Audit Log"]
