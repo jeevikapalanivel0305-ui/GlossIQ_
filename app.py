@@ -326,18 +326,16 @@ def render_sidebar():
         # Intelligence
         st.markdown('<div class="sidebar-category">Intelligence</div>', unsafe_allow_html=True)
         st.button(
-            "Executive Dashboard", 
+            "📊 Executive Dashboard", 
             key="nav_dashboard", 
-            icon=":material/dashboard:", 
             use_container_width=True, 
             on_click=set_nav_tab, 
             args=("Executive Dashboard",),
             type="primary" if current_tab == "Executive Dashboard" else "secondary"
         )
         st.button(
-            "Conflict Detection", 
+            "⚠️ Conflict Detection", 
             key="nav_Conflict", 
-            icon=":material/warning:", 
             use_container_width=True, 
             on_click=set_nav_tab, 
             args=("Conflict Detection",),
@@ -349,9 +347,8 @@ def render_sidebar():
         
         # Integrations & API as first item
         st.button(
-            "Integrations & API", 
+            "🔗 Integrations & API", 
             key="nav_Integrations", 
-            icon=":material/link:", 
             use_container_width=True, 
             on_click=set_nav_tab, 
             args=("Integrations & API",),
@@ -359,9 +356,8 @@ def render_sidebar():
         )
 
         st.button(
-            "Asset Search", 
+            "🔍 Asset Search", 
             key="nav_Asset Search", 
-            icon=":material/search:", 
             use_container_width=True, 
             on_click=set_nav_tab, 
             args=("Asset Search",),
@@ -371,9 +367,8 @@ def render_sidebar():
         # Governance
         st.markdown('<div class="sidebar-category">Governance</div>', unsafe_allow_html=True)
         st.button(
-            "Glossary AI", 
+            "🎓 Glossary AI", 
             key="nav_Glossary AI", 
-            icon=":material/school:", 
             use_container_width=True, 
             on_click=set_nav_tab, 
             args=("Glossary AI",),
@@ -381,9 +376,8 @@ def render_sidebar():
         )
         
         st.button(
-            "Review & Approval", 
+            "✅ Review & Approval", 
             key="nav_Review", 
-            icon=":material/playlist_add_check:", 
             use_container_width=True, 
             on_click=set_nav_tab, 
             args=("Review & Approval",),
@@ -391,9 +385,8 @@ def render_sidebar():
         )
 
         st.button(
-            "Glossary Hub", 
+            "📦 Glossary Hub", 
             key="nav_Master Glossary", 
-            icon=":material/inventory_2:", 
             use_container_width=True, 
             on_click=set_nav_tab, 
             args=("Glossary Hub",),
@@ -401,9 +394,8 @@ def render_sidebar():
         )
 
         st.button(
-            "Semantic Search", 
+            "🌐 Semantic Search", 
             key="nav_Semantic Search", 
-            icon=":material/travel_explore:", 
             use_container_width=True, 
             on_click=set_nav_tab, 
             args=("Semantic Search",),
@@ -411,9 +403,8 @@ def render_sidebar():
         )
 
         st.button(
-            "Lineage Map", 
+            "🌳 Lineage Map", 
             key="nav_Lineage", 
-            icon=":material/account_tree:", 
             use_container_width=True, 
             on_click=set_nav_tab, 
             args=("Lineage Map",),
@@ -425,9 +416,8 @@ def render_sidebar():
         # Profile & RBAC Switcher
         st.markdown('<div class="sidebar-category">System Admin</div>', unsafe_allow_html=True)
         st.button(
-            "RBAC Management", 
+            "🔐 RBAC Management", 
             key="nav_RBAC", 
-            icon=":material/admin_panel_settings:", 
             use_container_width=True, 
             on_click=set_nav_tab, 
             args=("RBAC Management",),
@@ -500,14 +490,31 @@ def _img_tag(filename, size=24):
         return "🔌"
 
 def _configure_integration_dialog(name):
-    """Set flag to open inline config for this connector."""
+    """Set flag to open the connector config panel and rerun to show it."""
     st.session_state["_open_integration_config"] = name
 
-def _render_inline_integration_config(name):
-    """Render integration config inline (replaces st.dialog)."""
+def _render_integration_config_popup(name):
+    """Render integration config as a modal-style popup."""
     cfg = st.session_state.integration_connectors[name]
-    st.markdown(f"**{name}** — {cfg['desc']}")
-    st.divider()
+
+    # Inject a fixed dark overlay behind the form to simulate modal
+    st.markdown(
+        '<div style="position:fixed;top:0;left:0;right:0;bottom:0;'
+        'background:rgba(0,0,0,0.4);z-index:999;pointer-events:none;"></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Modal card - prominent shadow & border to visually stand out
+    st.markdown(
+        f'<div style="background:white;border:2px solid #1D4ED8;border-radius:16px;'
+        f'padding:28px 32px;margin:0 auto 20px auto;max-width:560px;'
+        f'box-shadow:0 20px 60px rgba(0,0,0,0.25);position:relative;z-index:1000;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
+        f'<div style="font-size:20px;font-weight:700;color:#1D4ED8;">⚙️ {name}</div>'
+        f'<div style="font-size:12px;color:#6B7280;background:#F3F4F6;padding:4px 10px;border-radius:6px;">{cfg["desc"]}</div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
 
     if name == "Databricks Unity":
         st.info("Connect to Databricks to push glossary terms as Unity Catalog tags (key = column name, value = business term).")
@@ -628,6 +635,7 @@ def render_integrations_tab():
             btn_label = "Configure" if is_connected else "Connect"
             if st.button(btn_label, key=f"int_btn_{name}", use_container_width=True):
                 _configure_integration_dialog(name)
+                st.rerun()
 
     # ═══════════════════════════════════════════════════════════════════════════
     # CATALOG CONNECTORS
@@ -637,6 +645,12 @@ def render_integrations_tab():
     connectors = st.session_state.integration_connectors
     names = list(connectors.keys())
 
+    # ── Show config popup panel ABOVE cards when a connector is selected ───────
+    _open_cfg = st.session_state.get("_open_integration_config")
+    if _open_cfg and _open_cfg in connectors:
+        _render_integration_config_popup(_open_cfg)
+        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+
     # Render 3 per row
     for row_start in range(0, len(names), 3):
         row_names = names[row_start:row_start + 3]
@@ -644,11 +658,6 @@ def render_integrations_tab():
         for i, name in enumerate(row_names):
             _render_connector_card(cols[i], name, connectors[name])
 
-    # ── Inline config panel (replaces st.dialog) ─────────────────────────────
-    _open_cfg = st.session_state.get("_open_integration_config")
-    if _open_cfg and _open_cfg in connectors:
-        st.divider()
-        _render_inline_integration_config(_open_cfg)
 
 def _review_term_dialog(idx):
     """Set flag to show inline review for this term."""

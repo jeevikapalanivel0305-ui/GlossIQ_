@@ -83,6 +83,19 @@ def deactivate_term(table_guid, physical_term):
     conn.close()
 
 
+def deactivate_by_business_term(table_guid, business_term):
+    """Deactivate existing active records for a business term name (SCD Type 2).
+    When a new version of the same business term is approved, the old record becomes non-active."""
+    conn = _get_conn()
+    conn.execute("""
+        UPDATE glossary_terms 
+        SET active = 0 
+        WHERE table_guid = ? AND LOWER(business_term) = LOWER(?) AND active = 1
+    """, (table_guid, business_term))
+    conn.commit()
+    conn.close()
+
+
 def get_active_terms(table_guid=None, source_filter=None, since=None):
     """Get only currently active (approved) terms. If 'since' is set, only return terms stored after that timestamp."""
     conn = _get_conn()

@@ -25,7 +25,7 @@
             "Type": "Column",
             "Source": "Databricks Unity Catalog",
             "Confidence (%)": 98,
-            "Active": 1,
+            "Active": 0,
             "Version": 1,
             "Stored At": "2026-07-30T10:58:54.079975",
             "Status": "Approved"

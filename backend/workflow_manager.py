@@ -166,15 +166,17 @@ class WorkflowManager:
 
             bucket = master[asset_guid]
             entry_phys = (entry.get("physical_term") or entry.get("term_name") or "").strip().lower()
+            entry_biz = (entry.get("term_name") or "").strip().lower()
             entry_status = entry.get("status", "")
             is_approved = entry_status in ("Approved", "Approved (Merged)")
 
             # SCD Type 2: deactivate any active record in this bucket that shares
-            # the same Physical Term (only when new entry is approved)
+            # the same Physical Term OR same Business Term (only when new entry is approved)
             if is_approved:
                 for r in bucket:
                     r_phys = (r.get("Physical Term") or "").strip().lower()
-                    if r_phys and r_phys == entry_phys:
+                    r_biz = (r.get("Business Term") or "").strip().lower()
+                    if (r_phys and r_phys == entry_phys) or (r_biz and r_biz == entry_biz):
                         r["Active"] = 0
 
             # Version = count of all records for this physical term + 1
@@ -580,8 +582,11 @@ class WorkflowManager:
         safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
         asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{term_id}"
         phys_term = entry.get("physical_term") or entry.get("term_name") or ""
+        biz_term = entry.get("term_name") or ""
         # Deactivate previous active record for this physical term
         glossary_db.deactivate_term(asset_guid, phys_term)
+        # Deactivate previous active record for this business term name
+        glossary_db.deactivate_by_business_term(asset_guid, biz_term)
         next_ver = glossary_db.get_next_version(asset_guid, phys_term)
         glossary_db.store_term(
             entity_guid=term_id,
@@ -781,7 +786,10 @@ class WorkflowManager:
         safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
         asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{term_id}"
         phys_term = entry.get("physical_term") or entry.get("term_name") or ""
+        biz_term = entry.get("term_name") or ""
         glossary_db.deactivate_term(asset_guid, phys_term)
+        # Deactivate previous active record for this business term name
+        glossary_db.deactivate_by_business_term(asset_guid, biz_term)
         next_ver = glossary_db.get_next_version(asset_guid, phys_term)
         glossary_db.store_term(
             entity_guid=term_id,
