@@ -212,7 +212,7 @@ class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
-    def create_suggested_term(cls, term_name, definition, source="Manual", confidence_score=80, table_name="", term_type="Column", physical_term=""):
+    def create_suggested_term(cls, term_name, definition, source="Manual", confidence_score=80, table_name="", term_type="Column", physical_term="", classification=""):
         """
         Creates a new AI-suggested term and adds it to both:
           - ai_suggested_terms store
@@ -252,6 +252,7 @@ class WorkflowManager:
             "table_name":       table_name.strip() if table_name else "",
             "term_type":        term_type,
             "physical_term":    physical_term.strip() if physical_term else "",
+            "classification":   classification.strip() if classification else "",
         }
 
         # Persist to ai_suggested_terms — deduplicate by (term_name, table_name)
@@ -601,6 +602,7 @@ class WorkflowManager:
             active=1,
             version=next_ver,
             status="Approved",
+            classification=entry.get("classification", ""),
         )
 
         # 4. Update queue entry
@@ -804,6 +806,7 @@ class WorkflowManager:
             active=1,
             version=next_ver,
             status="Approved (Merged)",
+            classification=entry.get("classification", ""),
         )
 
         # 4. Update queue entry

@@ -2164,6 +2164,7 @@ def render_glossary_tab():
                     score         = int(row.get("Confidence (%)", 80) or 80)
                     term_type     = str(row.get("Type", "Column") or "Column")
                     physical_term = str(row.get("Physical Term") or row.get("related_column") or "")
+                    classification = str(row.get("Classification", "") or "")
                     if term_name:
                         # Detect whether the term came from a Databricks Unity Catalog table
                         _tbl_meta = st.session_state.get('tables_metadata', {}).get(str(row.get("table_guid", "")), {})
@@ -2176,6 +2177,7 @@ def render_glossary_tab():
                             table_name       = str(row.get("table_name", "") or ""),
                             term_type        = term_type,
                             physical_term    = physical_term,
+                            classification   = classification,
                         )
                         queued_count += 1
                 if queued_count:
@@ -2450,6 +2452,7 @@ def render_master_glossary_tab():
                     "business_term": "Business Term",
                     "physical_term": "Physical Term",
                     "description": "Description",
+                    "classification": "Classification",
                     "type": "Type",
                     "source": "Source",
                     "confidence": "Confidence (%)",
@@ -2527,7 +2530,7 @@ def render_master_glossary_tab():
             }
                 
             priority_cols = ["Active", "Version", "Status"]
-            desired_order = ["Type", "Physical Term", "Business Term", "Description", "Source", "Stored At"]
+            desired_order = ["Type", "Physical Term", "Business Term", "Description", "Classification", "Source", "Stored At"]
             middle_cols = [c for c in desired_order if c in df_hist.columns and c not in priority_cols]
             extra_cols  = [c for c in df_hist.columns
                            if c not in priority_cols and c not in middle_cols and c not in HIDDEN_COLS]
@@ -2582,6 +2585,19 @@ def render_master_glossary_tab():
 
             # Registration card
             st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+
+            # ── Write-back columns selector ──────────────────────────────────
+            _writeback_options = ["Business Term", "Description", "Classification"]
+            if "purview_writeback_cols" not in st.session_state:
+                st.session_state["purview_writeback_cols"] = ["Business Term", "Description", "Classification"]
+            _wb_cols = st.multiselect(
+                "Columns to write back to Purview",
+                _writeback_options,
+                default=st.session_state["purview_writeback_cols"],
+                key="hub_writeback_cols",
+                help="Select which fields to push when registering terms to Purview"
+            )
+            st.session_state["purview_writeback_cols"] = _wb_cols
 
             _btn_disabled = not can_register or not _platform_name or active_df.empty
             _btn_label = f"{_platform_icon} Register {len(active_df)} Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
@@ -2651,11 +2667,13 @@ def render_master_glossary_tab():
                                         pass
 
                                 registered, errors = 0, []
+                                _wb = st.session_state.get("purview_writeback_cols", ["Business Term", "Description", "Classification"])
                                 with st.spinner("Registering terms to Purview…"):
                                     for _, row in active_df.iterrows():
                                         term_name     = str(row.get("Business Term") or row.get("Glossary Term", "")).strip()
                                         definition    = str(row.get("Description") or row.get("Definition / Description", "")).strip()
                                         physical_term = str(row.get("Physical Term") or row.get("Original Name", "")).strip()
+                                        classification = str(row.get("Classification", "") or "").strip()
                                         if not term_name:
                                             continue
                                         try:
@@ -2665,22 +2683,29 @@ def render_master_glossary_tab():
                                                 if purview_entity_guid:
                                                     col_guid_lookup[physical_term.upper()] = purview_entity_guid
 
-                                            existing_term_guid = connector.get_term_by_name(term_name)
-                                            if existing_term_guid:
-                                                connector.update_glossary_term(existing_term_guid, term_name, definition, glossary_guid)
-                                                final_term_guid = existing_term_guid
-                                            else:
-                                                result = connector.create_glossary_term(term_name, definition, glossary_guid)
-                                                final_term_guid = result.get("guid") if isinstance(result, dict) else None
+                                            # Write Business Term + Description if selected
+                                            if "Business Term" in _wb or "Description" in _wb:
+                                                _def_to_push = definition if "Description" in _wb else ""
+                                                _name_to_push = term_name if "Business Term" in _wb else physical_term
+                                                existing_term_guid = connector.get_term_by_name(_name_to_push)
+                                                if existing_term_guid:
+                                                    connector.update_glossary_term(existing_term_guid, _name_to_push, _def_to_push, glossary_guid)
+                                                    final_term_guid = existing_term_guid
+                                                else:
+                                                    result = connector.create_glossary_term(_name_to_push, _def_to_push, glossary_guid)
+                                                    final_term_guid = result.get("guid") if isinstance(result, dict) else None
 
-                                            if final_term_guid and purview_entity_guid:
-                                                connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
-                                                registered += 1
-                                            elif final_term_guid:
-                                                errors.append(f"{term_name}: Column '{physical_term}' not found in Purview — term saved but not linked")
-                                                registered += 1
-                                            else:
-                                                errors.append(f"{term_name}: Could not obtain term GUID after create/update")
+                                                if final_term_guid and purview_entity_guid:
+                                                    connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
+                                                elif not final_term_guid:
+                                                    errors.append(f"{term_name}: Could not obtain term GUID after create/update")
+                                                    continue
+
+                                            # Write Classification if selected
+                                            if "Classification" in _wb and classification and purview_entity_guid:
+                                                connector.add_classification_to_entity(purview_entity_guid, classification)
+
+                                            registered += 1
                                         except Exception as ex:
                                             errors.append(f"{term_name}: {str(ex)}")
                                 if errors:

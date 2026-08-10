@@ -31,6 +31,7 @@ def init_db():
             business_term TEXT,
             physical_term TEXT,
             description TEXT,
+            classification TEXT DEFAULT '',
             type TEXT DEFAULT 'Column',
             source TEXT DEFAULT 'AI Suggester',
             confidence INTEGER DEFAULT 0,
@@ -50,22 +51,28 @@ def init_db():
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_status ON glossary_terms(status)
     """)
+    # Migration: add classification column if missing (existing databases)
+    try:
+        conn.execute("ALTER TABLE glossary_terms ADD COLUMN classification TEXT DEFAULT ''")
+    except Exception:
+        pass  # column already exists
     conn.commit()
     conn.close()
 
 
 def store_term(entity_guid, table_guid, table_name, business_term, physical_term,
                description, term_type="Column", source="AI Suggester",
-               confidence=0, active=1, version=1, status="Approved", stored_at=None):
+               confidence=0, active=1, version=1, status="Approved", stored_at=None,
+               classification=""):
     """Store a single term record in the database."""
     conn = _get_conn()
     conn.execute("""
         INSERT INTO glossary_terms 
         (entity_guid, table_guid, table_name, business_term, physical_term,
-         description, type, source, confidence, active, version, status, stored_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         description, classification, type, source, confidence, active, version, status, stored_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (entity_guid, table_guid, table_name, business_term, physical_term,
-          description, term_type, source, confidence, active, version, status,
+          description, classification or "", term_type, source, confidence, active, version, status,
           stored_at or datetime.now().isoformat()))
     conn.commit()
     conn.close()
