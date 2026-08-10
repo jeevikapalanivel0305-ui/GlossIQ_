@@ -127,17 +127,11 @@ def generate_glossary_suggestions(table_name, columns, industry="General", busin
             "- Assign a 'classification' from EXACTLY one of the following categories based on the data sensitivity and nature of the column/table:\n"
             "  * PII (Personally Identifiable Information) - names, emails, phone numbers, addresses\n"
             "  * Sensitive PII - SSN, passport, biometric data, racial/ethnic origin\n"
-            "  * Financial - account numbers, credit cards, salary, revenue\n"
             "  * PHI (Protected Health Information) - medical records, diagnoses, prescriptions\n"
             "  * Confidential - trade secrets, proprietary algorithms, internal strategies\n"
             "  * Restricted - data with regulatory/legal access controls\n"
             "  * Internal - internal operational data not meant for external sharing\n"
             "  * Public - publicly available or non-sensitive data\n"
-            "  * Business-Sensitive - KPIs, forecasts, competitive intelligence\n"
-            "  * Credentials / Authentication - passwords, tokens, API keys\n"
-            "  * Government / Identity - national IDs, voter registration, tax IDs\n"
-            "  * Location Data - GPS coordinates, IP addresses, geofencing data\n"
-            "  * Technical Data - system logs, configs, infrastructure metadata\n"
             "  Choose the MOST appropriate single classification for each item."
         )
         fields.append("classification")
