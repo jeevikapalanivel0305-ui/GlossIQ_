@@ -84,7 +84,6 @@ def get_embeddings(texts, client=None):
         )
         return [item.embedding for item in response.data]
     except Exception as e:
-        st.error(f"Embedding API error: {str(e)}")
         return None
 
 
@@ -177,7 +176,6 @@ If nothing is relevant, return an empty array: []"""
         if not isinstance(indices, list):
             return []
     except Exception as e:
-        st.error(f"Search API error: {str(e)}")
         return keyword_search_glossary(query, top_k)
 
     results = []
