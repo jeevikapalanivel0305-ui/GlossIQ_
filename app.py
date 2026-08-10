@@ -494,25 +494,33 @@ def _configure_integration_dialog(name):
     st.session_state["_open_integration_config"] = name
 
 def _render_integration_config_popup(name):
-    """Render integration config as a centered popup-style card (replaces card view)."""
+    """Render integration config as a popup window overlaying the page."""
     cfg = st.session_state.integration_connectors[name]
 
-    # Centered popup card
+    # Inject dark backdrop overlay via JS/HTML component
+    components.html(
+        '<div style="position:fixed;top:0;left:0;width:100vw;height:100vh;'
+        'background:rgba(0,0,0,0.5);z-index:999;"></div>',
+        height=0,
+    )
+
+    # Popup form container with prominent styling
+    st.markdown(
+        f'<div style="background:white;border:2px solid #1D4ED8;border-radius:14px;'
+        f'padding:24px 28px;margin:0 auto 20px auto;max-width:500px;'
+        f'box-shadow:0 20px 60px rgba(0,0,0,0.3);position:relative;z-index:1000;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+        f'<div style="font-size:18px;font-weight:700;color:#1D4ED8;">{name}</div>'
+        f'<div style="font-size:12px;color:#6B7280;background:#F3F4F6;padding:4px 10px;border-radius:6px;">{cfg["desc"]}</div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Form fields in a centered column
     col_l, col_mid, col_r = st.columns([1, 2, 1])
     with col_mid:
-        st.markdown(
-            f'<div style="background:white;border:2px solid #1D4ED8;border-radius:14px;'
-            f'padding:28px 32px;box-shadow:0 12px 40px rgba(0,0,0,0.15);">'
-            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
-            f'<div style="font-size:18px;font-weight:700;color:#1D4ED8;">{name}</div>'
-            f'<div style="font-size:12px;color:#6B7280;background:#F3F4F6;padding:4px 10px;border-radius:6px;">{cfg["desc"]}</div>'
-            f'</div></div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown("")
-
         if name == "Databricks Unity":
-            st.info("Connect to Databricks to push glossary terms as Unity Catalog tags (key = column name, value = business term).")
+            st.info("Connect to Databricks to push glossary terms as Unity Catalog tags.")
             st.text_input("Workspace URL", placeholder="https://adb-xxxx.azuredatabricks.net", value=cfg['api_endpoint'], key=f"int_ep_{name}")
             st.text_input("Personal Access Token", type="password", value=cfg['api_token'], key=f"int_tk_{name}")
         elif name == "Slack":
@@ -520,7 +528,7 @@ def _render_integration_config_popup(name):
             st.text_input("Bot Token", type="password", value=cfg['api_token'], key=f"int_tk_{name}")
             st.text_input("Default Channel", value=cfg.get('channel', '#data-governance'), key=f"int_ch_{name}")
         elif name == "Microsoft Purview":
-            st.info("Authenticate to Microsoft Purview data map to enable Search & Enrichment features.")
+            st.info("Authenticate to Microsoft Purview data map.")
             st.text_input("Account Name", value=st.session_state.connector_creds.get('purview_account_name',''), key=f"mp_ac_{name}")
             st.text_input("Tenant ID", value=st.session_state.connector_creds.get('purview_tenant_id',''), key=f"mp_te_{name}")
             st.text_input("Client ID", value=st.session_state.connector_creds.get('purview_client_id',''), key=f"mp_ci_{name}")
@@ -597,11 +605,10 @@ def render_integrations_tab():
 
     connectors = st.session_state.integration_connectors
 
-    # ── If a connector config is open, show ONLY the popup (not the cards) ────
+    # ── Show popup overlay if a connector config is open ──────────────────────
     _open_cfg = st.session_state.get("_open_integration_config")
     if _open_cfg and _open_cfg in connectors:
         _render_integration_config_popup(_open_cfg)
-        return
 
     # ── shared card renderer ─────────────────────────────────────────────────
     def _render_connector_card(col, name, cfg):
