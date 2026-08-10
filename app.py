@@ -280,7 +280,7 @@ if 'perm_cache' not in st.session_state:
         'search_collection': 'All Collections',
         'search_keyword': 'Customer',
         'glossary_industry': 'General',
-        'glossary_options': ['Business Term', 'Business Definition'],
+        'glossary_options': ['Business Term', 'Business Definition', 'Classifications'],
         'selected_table_ids': [],  # Persists checkbox selections across tab switches
         'uc_srch_cat_val': '— select catalog —',
         'uc_srch_sch_val': '— select schema —',
@@ -493,7 +493,7 @@ def _configure_integration_dialog(name):
     """Set flag to open the connector config panel and rerun to show it."""
     st.session_state["_open_integration_config"] = name
 
-@st.dialog("Configure Connector", width="large")
+@st.dialog("Configure Connector")
 def _show_connector_dialog(name):
     """Native Streamlit dialog popup for connector configuration."""
     cfg = st.session_state.integration_connectors[name]
