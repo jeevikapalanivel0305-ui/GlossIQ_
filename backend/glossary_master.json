@@ -1,21 +1,6 @@
 {
     "workflow_PATIENT_ADDRESS": [
         {
-            "entity_guid": "96544ed6-96bc-4b99-9bdf-a4faea4222c9",
-            "table_guid": "workflow_PATIENT_ADDRESS",
-            "table_name": "PATIENT_ADDRESS",
-            "Business Term": "Patient Demographic Contact Record",
-            "Physical Term": "patient_address",
-            "Definition / Description": "A collection of records capturing demographic and contact information for individual patients, including personal identifiers, birth information, contact modalities, and residential address details.",
-            "Type": "Table",
-            "Source": "Databricks Unity Catalog",
-            "Confidence (%)": 95,
-            "Active": 1,
-            "Version": 1,
-            "Stored At": "2026-07-30T10:58:54.079975",
-            "Status": "Approved"
-        },
-        {
             "entity_guid": "02f2100d-dd47-4b77-aee0-c56b5a0ea9e5",
             "table_guid": "workflow_PATIENT_ADDRESS",
             "table_name": "PATIENT_ADDRESS",
