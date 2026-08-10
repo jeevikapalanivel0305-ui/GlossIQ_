@@ -105,7 +105,7 @@ class AIRecommender:
 
 # ... (middle of the file)
 
-def generate_glossary_suggestions(table_name, columns, industry="General", business_context="", selected_options=None):
+def generate_glossary_suggestions(table_name, columns, industry="General", business_context="", selected_options=None, purview_classifications=None):
     """Generate Glossary suggestions based on user selection"""
     client = get_openai_client()
     if not client: return []
@@ -123,17 +123,27 @@ def generate_glossary_suggestions(table_name, columns, industry="General", busin
         instr.append("- Provide a precise 'definition' (Business Definition/Description)")
         fields.append("description")
     if "Classifications" in selected_options:
-        instr.append(
-            "- Assign a 'classification' from EXACTLY one of these 7 allowed values (use the exact text, no other values are permitted):\n"
-            "  1. PII (Personally Identifiable Information)\n"
-            "  2. Sensitive PII\n"
-            "  3. PHI (Protected Health Information)\n"
-            "  4. Confidential\n"
-            "  5. Restricted\n"
-            "  6. Internal\n"
-            "  7. Public\n"
-            "  You MUST pick exactly one from this list. Do NOT invent or use any other classification."
-        )
+        if purview_classifications:
+            # Use actual classification types from connected Purview account
+            cls_list = "\n".join(f"  {i+1}. {c}" for i, c in enumerate(purview_classifications))
+            instr.append(
+                f"- Assign a 'classification' from EXACTLY one of these allowed values fetched from Microsoft Purview (use the EXACT type name as shown, no other values are permitted):\n"
+                f"{cls_list}\n"
+                f"  You MUST pick exactly one from this list. Use the exact spelling and casing."
+            )
+        else:
+            # Fallback: default classification types
+            instr.append(
+                "- Assign a 'classification' from EXACTLY one of these 7 allowed values (use the exact text, no other values are permitted):\n"
+                "  1. PII (Personally Identifiable Information)\n"
+                "  2. Sensitive PII\n"
+                "  3. PHI (Protected Health Information)\n"
+                "  4. Confidential\n"
+                "  5. Restricted\n"
+                "  6. Internal\n"
+                "  7. Public\n"
+                "  You MUST pick exactly one from this list. Do NOT invent or use any other classification."
+            )
         fields.append("classification")
     
 

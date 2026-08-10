@@ -584,6 +584,24 @@ class PurviewConnector:
         except Exception:
             return False
 
+    def get_classification_types(self, debug=False):
+        """Fetch all classification type names registered in Purview."""
+        success, msg = self.authenticate(debug=debug)
+        if not success:
+            return []
+
+        url = f"{self.base_url}/datamap/api/atlas/v2/types/typedefs"
+        params = {"type": "classification"}
+        try:
+            r = requests.get(url, headers=self._headers(), params=params, timeout=30)
+            if r.status_code == 200:
+                data = r.json()
+                defs = data.get("classificationDefs", [])
+                return [d["name"] for d in defs if d.get("name")]
+            return []
+        except Exception:
+            return []
+
     # =========================================================
     # FETCH CRITICAL DATA ELEMENTS
     # =========================================================

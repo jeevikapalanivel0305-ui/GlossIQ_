@@ -1992,8 +1992,18 @@ def render_glossary_tab():
                 industry = st.session_state.get('industry', 'General')
                 options = st.session_state.get('ai_options', ["Business Term", "Business Definition"])
                 
+                # Fetch Purview classification types if connected
+                _purview_cls_types = []
+                if st.session_state.get("is_authenticated"):
+                    try:
+                        _creds = st.session_state.get("connector_creds", {})
+                        _pc = PurviewConnector(_creds.get("purview_account_name",""), _creds.get("purview_tenant_id",""), _creds.get("purview_client_id",""), _creds.get("purview_client_secret",""))
+                        _purview_cls_types = _pc.get_classification_types()
+                    except Exception:
+                        pass
+
                 for tid, meta in st.session_state.tables_metadata.items():
-                    suggestions = generate_glossary_suggestions(meta['name'], meta['columns'], industry=industry, business_context=st.session_state.get('biz_ctx', ""), selected_options=options)
+                    suggestions = generate_glossary_suggestions(meta['name'], meta['columns'], industry=industry, business_context=st.session_state.get('biz_ctx', ""), selected_options=options, purview_classifications=_purview_cls_types)
                     for s in suggestions:
                         s['table_guid'] = tid
                         s['table_name'] = meta['name']
