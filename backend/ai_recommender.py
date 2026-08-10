@@ -129,6 +129,12 @@ def generate_glossary_suggestions(table_name, columns, industry="General", busin
             instr.append(
                 f"- Assign a 'classification' from EXACTLY one of these allowed values fetched from Microsoft Purview (use the EXACT type name as shown, no other values are permitted):\n"
                 f"{cls_list}\n"
+                f"  CRITICAL: Analyze the BUSINESS MEANING and SEMANTIC CONTEXT of each column — NOT just its data type or format.\n"
+                f"  For example:\n"
+                f"    - A date column named 'ISSUE_DATE' for document issuance is NOT a date of birth.\n"
+                f"    - A column named 'GENDER' is about biological sex, NOT a generic personal attribute.\n"
+                f"    - A column named 'PHONE' is contact info, NOT an identifier like SSN.\n"
+                f"  Read the column name, business term, and definition together to understand what the data ACTUALLY represents before selecting the classification.\n"
                 f"  You MUST pick exactly one from this list. Use the exact spelling and casing."
             )
         else:
@@ -142,6 +148,7 @@ def generate_glossary_suggestions(table_name, columns, industry="General", busin
                 "  5. Restricted\n"
                 "  6. Internal\n"
                 "  7. Public\n"
+                "  CRITICAL: Analyze the BUSINESS MEANING and SEMANTIC CONTEXT of each column — NOT just its data type or format.\n"
                 "  You MUST pick exactly one from this list. Do NOT invent or use any other classification."
             )
         fields.append("classification")
