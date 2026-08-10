@@ -758,6 +758,19 @@ def render_review_tab():
                 )
                 f_score = st.slider("Confidence Score", 0, 100, 80)
 
+                # Classification dropdown — fetch from Purview if connected
+                _cls_options = ["PII (Personally Identifiable Information)", "Sensitive PII", "PHI (Protected Health Information)", "Confidential", "Restricted", "Internal", "Public"]
+                if st.session_state.get("is_authenticated"):
+                    try:
+                        _creds = st.session_state.get("connector_creds", {})
+                        _pc = PurviewConnector(_creds.get("purview_account_name",""), _creds.get("purview_tenant_id",""), _creds.get("purview_client_id",""), _creds.get("purview_client_secret",""))
+                        _pv_cls = _pc.get_classification_types()
+                        if _pv_cls:
+                            _cls_options = _pv_cls
+                    except Exception:
+                        pass
+                f_classification = st.selectbox("Classification", [""] + _cls_options, index=0, help="Select a data classification type")
+
             submitted = st.form_submit_button("Add to Approval Queue", type="primary", use_container_width=True, disabled=not _suggest_perms.get("can_suggest", False))
             if submitted:
                 if not _suggest_perms.get("can_suggest", False):
@@ -781,6 +794,7 @@ def render_review_tab():
                             source           = f_source,
                             confidence_score = f_score,
                             physical_term    = f_physical,
+                            classification   = f_classification,
                         )
                         st.success(f"✅ Term **'{f_term}'** added to the Approval Queue.")
                         st.rerun()
