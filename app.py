@@ -493,109 +493,88 @@ def _configure_integration_dialog(name):
     """Set flag to open the connector config panel and rerun to show it."""
     st.session_state["_open_integration_config"] = name
 
-def _render_integration_config_popup(name):
-    """Render integration config as a popup window overlaying the page."""
+@st.dialog("Configure Connector", width="large")
+def _show_connector_dialog(name):
+    """Native Streamlit dialog popup for connector configuration."""
     cfg = st.session_state.integration_connectors[name]
+    st.markdown(f"### {name}")
+    st.caption(cfg['desc'])
+    st.divider()
 
-    # Inject dark backdrop overlay via JS/HTML component
-    components.html(
-        '<div style="position:fixed;top:0;left:0;width:100vw;height:100vh;'
-        'background:rgba(0,0,0,0.5);z-index:999;"></div>',
-        height=0,
-    )
+    if name == "Databricks Unity":
+        st.info("Connect to Databricks to push glossary terms as Unity Catalog tags.")
+        st.text_input("Workspace URL", placeholder="https://adb-xxxx.azuredatabricks.net", value=cfg['api_endpoint'], key=f"int_ep_{name}")
+        st.text_input("Personal Access Token", type="password", value=cfg['api_token'], key=f"int_tk_{name}")
+    elif name == "Slack":
+        st.text_input("Webhook URL", value=cfg['api_endpoint'], key=f"int_ep_{name}")
+        st.text_input("Bot Token", type="password", value=cfg['api_token'], key=f"int_tk_{name}")
+        st.text_input("Default Channel", value=cfg.get('channel', '#data-governance'), key=f"int_ch_{name}")
+    elif name == "Microsoft Purview":
+        st.info("Authenticate to Microsoft Purview data map.")
+        st.text_input("Account Name", value=st.session_state.connector_creds.get('purview_account_name',''), key=f"mp_ac_{name}")
+        st.text_input("Tenant ID", value=st.session_state.connector_creds.get('purview_tenant_id',''), key=f"mp_te_{name}")
+        st.text_input("Client ID", value=st.session_state.connector_creds.get('purview_client_id',''), key=f"mp_ci_{name}")
+        st.text_input("Client Secret", type="password", value=st.session_state.connector_creds.get('purview_client_secret',''), key=f"mp_cs_{name}")
+    else:
+        st.text_input("API Endpoint", value=cfg['api_endpoint'], key=f"int_ep_{name}")
+        st.text_input("API Token / Secret", type="password", value=cfg['api_token'], key=f"int_tk_{name}")
 
-    # Popup form container with prominent styling
-    st.markdown(
-        f'<div style="background:white;border:2px solid #1D4ED8;border-radius:14px;'
-        f'padding:24px 28px;margin:0 auto 20px auto;max-width:500px;'
-        f'box-shadow:0 20px 60px rgba(0,0,0,0.3);position:relative;z-index:1000;">'
-        f'<div style="display:flex;justify-content:space-between;align-items:center;">'
-        f'<div style="font-size:18px;font-weight:700;color:#1D4ED8;">{name}</div>'
-        f'<div style="font-size:12px;color:#6B7280;background:#F3F4F6;padding:4px 10px;border-radius:6px;">{cfg["desc"]}</div>'
-        f'</div></div>',
-        unsafe_allow_html=True,
-    )
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Save & Connect", type="primary", use_container_width=True, key=f"int_save_{name}"):
+            if name == "Microsoft Purview":
+                account_name = st.session_state[f"mp_ac_{name}"]
+                tenant_id = st.session_state[f"mp_te_{name}"]
+                client_id = st.session_state[f"mp_ci_{name}"]
+                client_secret = st.session_state[f"mp_cs_{name}"]
 
-    # Form fields in a centered column
-    col_l, col_mid, col_r = st.columns([1, 2, 1])
-    with col_mid:
-        if name == "Databricks Unity":
-            st.info("Connect to Databricks to push glossary terms as Unity Catalog tags.")
-            st.text_input("Workspace URL", placeholder="https://adb-xxxx.azuredatabricks.net", value=cfg['api_endpoint'], key=f"int_ep_{name}")
-            st.text_input("Personal Access Token", type="password", value=cfg['api_token'], key=f"int_tk_{name}")
-        elif name == "Slack":
-            st.text_input("Webhook URL", value=cfg['api_endpoint'], key=f"int_ep_{name}")
-            st.text_input("Bot Token", type="password", value=cfg['api_token'], key=f"int_tk_{name}")
-            st.text_input("Default Channel", value=cfg.get('channel', '#data-governance'), key=f"int_ch_{name}")
-        elif name == "Microsoft Purview":
-            st.info("Authenticate to Microsoft Purview data map.")
-            st.text_input("Account Name", value=st.session_state.connector_creds.get('purview_account_name',''), key=f"mp_ac_{name}")
-            st.text_input("Tenant ID", value=st.session_state.connector_creds.get('purview_tenant_id',''), key=f"mp_te_{name}")
-            st.text_input("Client ID", value=st.session_state.connector_creds.get('purview_client_id',''), key=f"mp_ci_{name}")
-            st.text_input("Client Secret", type="password", value=st.session_state.connector_creds.get('purview_client_secret',''), key=f"mp_cs_{name}")
-        else:
-            st.text_input("API Endpoint", value=cfg['api_endpoint'], key=f"int_ep_{name}")
-            st.text_input("API Token / Secret", type="password", value=cfg['api_token'], key=f"int_tk_{name}")
-
-        c1, c2, c3 = st.columns([2, 2, 1])
-        with c1:
-            if st.button("Save & Connect", type="primary", use_container_width=True, key=f"int_save_{name}"):
-                if name == "Microsoft Purview":
-                    account_name = st.session_state[f"mp_ac_{name}"]
-                    tenant_id = st.session_state[f"mp_te_{name}"]
-                    client_id = st.session_state[f"mp_ci_{name}"]
-                    client_secret = st.session_state[f"mp_cs_{name}"]
-
-                    st.session_state.connector_creds.update({
-                        'purview_account_name': account_name,
-                        'purview_tenant_id': tenant_id,
-                        'purview_client_id': client_id,
-                        'purview_client_secret': client_secret
-                    })
-                    connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
-                    success, msg = connector.authenticate()
-                    if success:
-                        st.session_state.is_authenticated = True
-                        try:
-                            st.session_state.purview_collections = connector.get_collections()
-                        except:
-                            pass
-                    else:
-                        st.error(f"Failed to authenticate: {msg}")
-                        st.stop()
-                elif name == "Databricks Unity":
-                    _ep = st.session_state[f"int_ep_{name}"]
-                    _tk = st.session_state[f"int_tk_{name}"]
-                    st.session_state.integration_connectors[name]['api_endpoint'] = _ep
-                    st.session_state.integration_connectors[name]['api_token'] = _tk
-                    with st.spinner("Testing Databricks connection..."):
-                        _db_ok, _db_msg = DatabricksUnityConnector(_ep, _tk).test_connection()
-                    if not _db_ok:
-                        st.error(f"Connection failed: {_db_msg}")
-                        st.stop()
+                st.session_state.connector_creds.update({
+                    'purview_account_name': account_name,
+                    'purview_tenant_id': tenant_id,
+                    'purview_client_id': client_id,
+                    'purview_client_secret': client_secret
+                })
+                connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
+                success, msg = connector.authenticate()
+                if success:
+                    st.session_state.is_authenticated = True
+                    try:
+                        st.session_state.purview_collections = connector.get_collections()
+                    except:
+                        pass
                 else:
-                    st.session_state.integration_connectors[name]['api_endpoint'] = st.session_state[f"int_ep_{name}"]
-                    st.session_state.integration_connectors[name]['api_token'] = st.session_state[f"int_tk_{name}"]
-                    if name == "Slack":
-                        st.session_state.integration_connectors[name]['channel'] = st.session_state[f"int_ch_{name}"]
+                    st.error(f"Failed to authenticate: {msg}")
+                    st.stop()
+            elif name == "Databricks Unity":
+                _ep = st.session_state[f"int_ep_{name}"]
+                _tk = st.session_state[f"int_tk_{name}"]
+                st.session_state.integration_connectors[name]['api_endpoint'] = _ep
+                st.session_state.integration_connectors[name]['api_token'] = _tk
+                with st.spinner("Testing Databricks connection..."):
+                    _db_ok, _db_msg = DatabricksUnityConnector(_ep, _tk).test_connection()
+                if not _db_ok:
+                    st.error(f"Connection failed: {_db_msg}")
+                    st.stop()
+            else:
+                st.session_state.integration_connectors[name]['api_endpoint'] = st.session_state[f"int_ep_{name}"]
+                st.session_state.integration_connectors[name]['api_token'] = st.session_state[f"int_tk_{name}"]
+                if name == "Slack":
+                    st.session_state.integration_connectors[name]['channel'] = st.session_state[f"int_ch_{name}"]
 
-                from datetime import datetime
-                st.session_state.integration_connectors[name]['status'] = 'Connected'
-                st.session_state.integration_connectors[name]['last_sync'] = datetime.now().strftime("%I:%M %p")
-                st.session_state.pop("_open_integration_config", None)
-                st.success(f"Connected to {name} successfully!")
-                st.rerun()
-        with c2:
-            if cfg['status'] == 'Connected':
-                if st.button("Disconnect", use_container_width=True, key=f"int_disc_{name}"):
-                    st.session_state.integration_connectors[name]['status'] = 'Not connected'
-                    st.session_state.integration_connectors[name]['last_sync'] = ''
-                    if name == "Microsoft Purview":
-                        st.session_state.is_authenticated = False
-                    st.session_state.pop("_open_integration_config", None)
-                    st.rerun()
-        with c3:
-            if st.button("Close", use_container_width=True, key=f"int_close_{name}"):
+            from datetime import datetime
+            st.session_state.integration_connectors[name]['status'] = 'Connected'
+            st.session_state.integration_connectors[name]['last_sync'] = datetime.now().strftime("%I:%M %p")
+            st.session_state.pop("_open_integration_config", None)
+            st.success(f"Connected to {name} successfully!")
+            st.rerun()
+    with c2:
+        if cfg['status'] == 'Connected':
+            if st.button("Disconnect", use_container_width=True, key=f"int_disc_{name}"):
+                st.session_state.integration_connectors[name]['status'] = 'Not connected'
+                st.session_state.integration_connectors[name]['last_sync'] = ''
+                if name == "Microsoft Purview":
+                    st.session_state.is_authenticated = False
                 st.session_state.pop("_open_integration_config", None)
                 st.rerun()
 
@@ -605,10 +584,10 @@ def render_integrations_tab():
 
     connectors = st.session_state.integration_connectors
 
-    # ── Show popup overlay if a connector config is open ──────────────────────
+    # ── Show dialog popup if a connector is selected ──────────────────────────
     _open_cfg = st.session_state.get("_open_integration_config")
     if _open_cfg and _open_cfg in connectors:
-        _render_integration_config_popup(_open_cfg)
+        _show_connector_dialog(_open_cfg)
 
     # ── shared card renderer ─────────────────────────────────────────────────
     def _render_connector_card(col, name, cfg):
