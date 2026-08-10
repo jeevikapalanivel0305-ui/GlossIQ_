@@ -590,17 +590,48 @@ class PurviewConnector:
         if not success:
             return []
 
+        names = []
+
+        # Method 1: Get all type definitions and filter for classifications
         url = f"{self.base_url}/datamap/api/atlas/v2/types/typedefs"
-        params = {"type": "classification"}
         try:
-            r = requests.get(url, headers=self._headers(), params=params, timeout=30)
+            r = requests.get(url, headers=self._headers(), timeout=30)
             if r.status_code == 200:
                 data = r.json()
                 defs = data.get("classificationDefs", [])
-                return [d["name"] for d in defs if d.get("name")]
-            return []
+                names = [d["name"] for d in defs if d.get("name")]
         except Exception:
-            return []
+            pass
+
+        # Method 2: If empty, try headers endpoint
+        if not names:
+            url2 = f"{self.base_url}/datamap/api/atlas/v2/types/typedefs/headers"
+            try:
+                r2 = requests.get(url2, headers=self._headers(), timeout=30)
+                if r2.status_code == 200:
+                    headers_list = r2.json()
+                    names = [h["name"] for h in headers_list
+                             if h.get("category") == "CLASSIFICATION" and h.get("name")]
+            except Exception:
+                pass
+
+        # Method 3: Try search-based approach for Microsoft built-in classifications
+        if not names:
+            url3 = f"{self.base_url}/datamap/api/search/query"
+            params3 = {"api-version": "2023-09-01"}
+            payload3 = {"keywords": "MICROSOFT", "limit": 100, "filter": {"entityType": "AtlasClassification"}}
+            try:
+                r3 = requests.post(url3, headers=self._headers(), params=params3, json=payload3, timeout=30)
+                if r3.status_code == 200:
+                    for item in r3.json().get("value", []):
+                        n = item.get("name") or item.get("qualifiedName", "")
+                        if n:
+                            names.append(n)
+            except Exception:
+                pass
+
+        # Sort and deduplicate
+        return sorted(set(names))
 
     # =========================================================
     # FETCH CRITICAL DATA ELEMENTS
