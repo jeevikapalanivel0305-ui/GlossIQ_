@@ -2154,21 +2154,23 @@ def render_glossary_tab():
                     st.session_state.get('tables_metadata', {}).get(str(row.get("table_guid", "")), {}).get("source") == "databricks"
                     for _, row in selected_df.iterrows()
                 )
-                _clear_src = "Databricks Unity Catalog" if _any_uc_rows else "AI Suggester"
+                _clear_src = "Databricks Unity Catalog" if _any_uc_rows else "MS Purview"
                 WorkflowManager.clear_ai_pending_from_queue(source=_clear_src)
                 WorkflowManager.clear_ai_suggested_terms(source=_clear_src)
                 queued_count = 0
                 for _, row in selected_df.iterrows():
                     term_name     = row.get("Business Term") or row.get("Original Name") or ""
                     definition    = row.get("Description") or row.get("Definition / Description") or ""
-                    score         = int(row.get("Confidence (%)", 80) or 80)
+                    _raw_score    = row.get("Confidence (%)", 80)
+                    score         = int(_raw_score) if _raw_score is not None and str(_raw_score) not in ('nan', '') else 80
                     term_type     = str(row.get("Type", "Column") or "Column")
                     physical_term = str(row.get("Physical Term") or row.get("related_column") or "")
-                    classification = str(row.get("Classification", "") or "")
+                    _raw_cls      = row.get("Classification", "")
+                    classification = str(_raw_cls) if _raw_cls is not None and str(_raw_cls) != 'nan' else ""
                     if term_name:
                         # Detect whether the term came from a Databricks Unity Catalog table
                         _tbl_meta = st.session_state.get('tables_metadata', {}).get(str(row.get("table_guid", "")), {})
-                        _src = "Databricks Unity Catalog" if _tbl_meta.get("source") == "databricks" else "AI Suggester"
+                        _src = "Databricks Unity Catalog" if _tbl_meta.get("source") == "databricks" else "MS Purview"
                         WorkflowManager.create_suggested_term(
                             term_name        = term_name,
                             definition       = definition,
@@ -2401,7 +2403,7 @@ def render_master_glossary_tab():
             if _hub_uc_connected and not _hub_purview_connected:
                 _db_source_filter = "Databricks Unity Catalog"
             elif _hub_purview_connected and not _hub_uc_connected:
-                _db_source_filter = "AI Suggester"
+                _db_source_filter = "MS Purview"
 
             # Determine if approvals happened this session
             _has_new_approvals = st.session_state.get("hub_approved_this_session", False)
@@ -2586,19 +2588,6 @@ def render_master_glossary_tab():
             # Registration card
             st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
-            # ── Write-back columns selector ──────────────────────────────────
-            _writeback_options = ["Business Term", "Description", "Classification"]
-            if "purview_writeback_cols" not in st.session_state:
-                st.session_state["purview_writeback_cols"] = ["Business Term", "Description", "Classification"]
-            _wb_cols = st.multiselect(
-                "Columns to write back to Purview",
-                _writeback_options,
-                default=st.session_state["purview_writeback_cols"],
-                key="hub_writeback_cols",
-                help="Select which fields to push when registering terms to Purview"
-            )
-            st.session_state["purview_writeback_cols"] = _wb_cols
-
             _btn_disabled = not can_register or not _platform_name or active_df.empty
             _btn_label = f"{_platform_icon} Register {len(active_df)} Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
             _btn_help = "🔒 No permission" if not can_register else ("No integration connected — go to Integrations & API" if not _platform_name else f"Publish active terms to {_platform_name}")
@@ -2667,13 +2656,13 @@ def render_master_glossary_tab():
                                         pass
 
                                 registered, errors = 0, []
-                                _wb = st.session_state.get("purview_writeback_cols", ["Business Term", "Description", "Classification"])
                                 with st.spinner("Registering terms to Purview…"):
                                     for _, row in active_df.iterrows():
                                         term_name     = str(row.get("Business Term") or row.get("Glossary Term", "")).strip()
                                         definition    = str(row.get("Description") or row.get("Definition / Description", "")).strip()
                                         physical_term = str(row.get("Physical Term") or row.get("Original Name", "")).strip()
-                                        classification = str(row.get("Classification", "") or "").strip()
+                                        _raw_cls      = row.get("Classification", "")
+                                        classification = str(_raw_cls).strip() if _raw_cls is not None and str(_raw_cls) != 'nan' else ""
                                         if not term_name:
                                             continue
                                         try:
@@ -2683,26 +2672,22 @@ def render_master_glossary_tab():
                                                 if purview_entity_guid:
                                                     col_guid_lookup[physical_term.upper()] = purview_entity_guid
 
-                                            # Write Business Term + Description if selected
-                                            if "Business Term" in _wb or "Description" in _wb:
-                                                _def_to_push = definition if "Description" in _wb else ""
-                                                _name_to_push = term_name if "Business Term" in _wb else physical_term
-                                                existing_term_guid = connector.get_term_by_name(_name_to_push)
-                                                if existing_term_guid:
-                                                    connector.update_glossary_term(existing_term_guid, _name_to_push, _def_to_push, glossary_guid)
-                                                    final_term_guid = existing_term_guid
-                                                else:
-                                                    result = connector.create_glossary_term(_name_to_push, _def_to_push, glossary_guid)
-                                                    final_term_guid = result.get("guid") if isinstance(result, dict) else None
+                                            existing_term_guid = connector.get_term_by_name(term_name)
+                                            if existing_term_guid:
+                                                connector.update_glossary_term(existing_term_guid, term_name, definition, glossary_guid)
+                                                final_term_guid = existing_term_guid
+                                            else:
+                                                result = connector.create_glossary_term(term_name, definition, glossary_guid)
+                                                final_term_guid = result.get("guid") if isinstance(result, dict) else None
 
-                                                if final_term_guid and purview_entity_guid:
-                                                    connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
-                                                elif not final_term_guid:
-                                                    errors.append(f"{term_name}: Could not obtain term GUID after create/update")
-                                                    continue
+                                            if final_term_guid and purview_entity_guid:
+                                                connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
+                                            elif not final_term_guid:
+                                                errors.append(f"{term_name}: Could not obtain term GUID after create/update")
+                                                continue
 
-                                            # Write Classification if selected
-                                            if "Classification" in _wb and classification and purview_entity_guid:
+                                            # Push classification to Purview entity
+                                            if classification and purview_entity_guid:
                                                 connector.add_classification_to_entity(purview_entity_guid, classification)
 
                                             registered += 1
