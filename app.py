@@ -2673,6 +2673,9 @@ def render_master_glossary_tab():
                                         physical_term = str(row.get("Physical Term") or row.get("Original Name", "")).strip()
                                         _raw_cls      = row.get("Classification", "")
                                         classification = str(_raw_cls).strip() if _raw_cls is not None and str(_raw_cls) != 'nan' else ""
+                                        _term_type    = str(row.get("Type", "Column") or "Column")
+                                        _raw_conf     = row.get("Confidence (%)", 0)
+                                        _confidence   = int(_raw_conf) if _raw_conf is not None and str(_raw_conf) not in ('nan', '') else 0
                                         if not term_name:
                                             continue
                                         try:
@@ -2702,21 +2705,25 @@ def render_master_glossary_tab():
                                                 if not cls_ok:
                                                     errors.append(f"{term_name}: Classification '{classification}' could not be applied to entity")
 
-                                            # Store registration in Glossary Hub DB for history
-                                            _term_type = str(row.get("Type", "Column") or "Column")
-                                            _source = str(row.get("Source", "MS Purview") or "MS Purview")
+                                            # Store registered term in Glossary Hub DB
+                                            _tbl_name = str(row.get("table_name", "") or asset_to_view or "").strip()
+                                            _tbl_guid = str(row.get("table_guid", "") or selected_guid or "").strip()
+                                            _entity_guid = str(purview_entity_guid or final_term_guid or "")
+                                            glossary_db.deactivate_term(_tbl_guid, physical_term)
+                                            glossary_db.deactivate_by_business_term(_tbl_guid, term_name)
+                                            _next_ver = glossary_db.get_next_version(_tbl_guid, physical_term)
                                             glossary_db.store_term(
-                                                entity_guid=purview_entity_guid or final_term_guid or "",
-                                                table_guid=selected_guid,
-                                                table_name=asset_to_view,
+                                                entity_guid=_entity_guid,
+                                                table_guid=_tbl_guid,
+                                                table_name=_tbl_name.upper() if _tbl_name else "Registered Terms",
                                                 business_term=term_name,
                                                 physical_term=physical_term,
                                                 description=definition,
                                                 term_type=_term_type,
-                                                source=_source,
-                                                confidence=int(row.get("Confidence (%)", 0) or 0) if str(row.get("Confidence (%)", 0)) != 'nan' else 0,
+                                                source="MS Purview",
+                                                confidence=_confidence,
                                                 active=1,
-                                                version=glossary_db.get_next_version(selected_guid, physical_term),
+                                                version=_next_ver,
                                                 status="Registered",
                                                 classification=classification,
                                             )
