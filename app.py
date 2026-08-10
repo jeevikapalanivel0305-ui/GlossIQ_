@@ -543,6 +543,10 @@ def _show_connector_dialog(name):
                         st.session_state.purview_collections = connector.get_collections()
                     except:
                         pass
+                    try:
+                        st.session_state.purview_classification_types = connector.get_classification_types()
+                    except:
+                        st.session_state.purview_classification_types = []
                 else:
                     st.error(f"Failed to authenticate: {msg}")
                     st.stop()
@@ -758,17 +762,10 @@ def render_review_tab():
                 )
                 f_score = st.slider("Confidence Score", 0, 100, 80)
 
-                # Classification dropdown — fetch from Purview if connected
-                _cls_options = ["PII (Personally Identifiable Information)", "Sensitive PII", "PHI (Protected Health Information)", "Confidential", "Restricted", "Internal", "Public"]
-                if st.session_state.get("is_authenticated"):
-                    try:
-                        _creds = st.session_state.get("connector_creds", {})
-                        _pc = PurviewConnector(_creds.get("purview_account_name",""), _creds.get("purview_tenant_id",""), _creds.get("purview_client_id",""), _creds.get("purview_client_secret",""))
-                        _pv_cls = _pc.get_classification_types()
-                        if _pv_cls:
-                            _cls_options = _pv_cls
-                    except Exception:
-                        pass
+                # Classification dropdown — use cached Purview types if available
+                _cls_options = st.session_state.get("purview_classification_types", [])
+                if not _cls_options:
+                    _cls_options = ["PII (Personally Identifiable Information)", "Sensitive PII", "PHI (Protected Health Information)", "Confidential", "Restricted", "Internal", "Public"]
                 f_classification = st.selectbox("Classification", [""] + _cls_options, index=0, help="Select a data classification type")
 
             submitted = st.form_submit_button("Add to Approval Queue", type="primary", use_container_width=True, disabled=not _suggest_perms.get("can_suggest", False))
@@ -2006,15 +2003,8 @@ def render_glossary_tab():
                 industry = st.session_state.get('industry', 'General')
                 options = st.session_state.get('ai_options', ["Business Term", "Business Definition"])
                 
-                # Fetch Purview classification types if connected
-                _purview_cls_types = []
-                if st.session_state.get("is_authenticated"):
-                    try:
-                        _creds = st.session_state.get("connector_creds", {})
-                        _pc = PurviewConnector(_creds.get("purview_account_name",""), _creds.get("purview_tenant_id",""), _creds.get("purview_client_id",""), _creds.get("purview_client_secret",""))
-                        _purview_cls_types = _pc.get_classification_types()
-                    except Exception:
-                        pass
+                # Use cached Purview classification types if available
+                _purview_cls_types = st.session_state.get("purview_classification_types", [])
 
                 for tid, meta in st.session_state.tables_metadata.items():
                     suggestions = generate_glossary_suggestions(meta['name'], meta['columns'], industry=industry, business_context=st.session_state.get('biz_ctx', ""), selected_options=options, purview_classifications=_purview_cls_types)
