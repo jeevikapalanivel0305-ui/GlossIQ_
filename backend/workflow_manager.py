@@ -180,14 +180,12 @@ class WorkflowManager:
                     if (r_phys and r_phys == entry_phys) or (r_biz and r_biz == entry_biz):
                         r["Active"] = 0
 
-            # Version = global count of all records for this physical term across all buckets + 1
-            all_same_phys = []
-            for bkt_records in master.values():
-                all_same_phys.extend(
-                    r for r in bkt_records
-                    if (r.get("Physical Term") or "").strip().lower() == entry_phys
-                )
-            next_version = len(all_same_phys) + 1
+            # Version scoped to this table bucket only
+            same_phys_in_bucket = [
+                r for r in bucket
+                if (r.get("Physical Term") or "").strip().lower() == entry_phys
+            ]
+            next_version = len(same_phys_in_bucket) + 1
             bucket.append({
                 "entity_guid":              entry.get("term_id"),
                 "table_guid":               asset_guid,
@@ -594,7 +592,7 @@ class WorkflowManager:
         glossary_db.deactivate_term(asset_guid, phys_term)
         # Deactivate previous active record for this business term name
         glossary_db.deactivate_by_business_term(asset_guid, biz_term)
-        next_ver = glossary_db.get_next_version(phys_term)
+        next_ver = glossary_db.get_next_version(phys_term, table_guid=asset_guid)
         glossary_db.store_term(
             entity_guid=term_id,
             table_guid=asset_guid,
@@ -659,7 +657,7 @@ class WorkflowManager:
         safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
         asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{term_id}"
         phys_term = entry.get("physical_term") or entry.get("term_name") or ""
-        next_ver = glossary_db.get_next_version(phys_term)
+        next_ver = glossary_db.get_next_version(phys_term, table_guid=asset_guid)
         glossary_db.store_term(
             entity_guid=term_id,
             table_guid=asset_guid,
@@ -792,7 +790,7 @@ class WorkflowManager:
         glossary_db.deactivate_term(asset_guid, phys_term)
         # Deactivate previous active record for this business term name
         glossary_db.deactivate_by_business_term(asset_guid, biz_term)
-        next_ver = glossary_db.get_next_version(phys_term)
+        next_ver = glossary_db.get_next_version(phys_term, table_guid=asset_guid)
         glossary_db.store_term(
             entity_guid=term_id,
             table_guid=asset_guid,

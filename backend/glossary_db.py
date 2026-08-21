@@ -238,33 +238,38 @@ def get_table_names_with_active_terms(source_filter=None):
 
 
 def get_next_version(physical_term, table_guid=None):
-    """Get the next version number for a physical term (global across all tables)."""
+    """Get the next version number for a physical term within the same table."""
     conn = _get_conn()
-    row = conn.execute("""
-        SELECT MAX(version) as max_ver FROM glossary_terms
-        WHERE LOWER(physical_term) = LOWER(?)
-    """, (physical_term,)).fetchone()
+    if table_guid:
+        row = conn.execute("""
+            SELECT MAX(version) as max_ver FROM glossary_terms
+            WHERE LOWER(physical_term) = LOWER(?) AND table_guid = ?
+        """, (physical_term, table_guid)).fetchone()
+    else:
+        row = conn.execute("""
+            SELECT MAX(version) as max_ver FROM glossary_terms
+            WHERE LOWER(physical_term) = LOWER(?)
+        """, (physical_term,)).fetchone()
     conn.close()
     return (row["max_ver"] or 0) + 1
 
 
 def fix_duplicate_versions():
-    """Fix any physical terms that have duplicate/incorrect version numbers by re-sequencing globally per physical_term."""
+    """Fix any physical terms that have duplicate/incorrect version numbers, scoped per table_guid + physical_term."""
     conn = _get_conn()
-    # Find physical terms with more than one record (need sequential versioning)
     groups = conn.execute("""
-        SELECT physical_term
+        SELECT table_guid, physical_term
         FROM glossary_terms
-        GROUP BY LOWER(physical_term)
+        GROUP BY table_guid, LOWER(physical_term)
         HAVING COUNT(*) > 1
     """).fetchall()
     fixed = 0
     for g in groups:
         rows = conn.execute("""
             SELECT id, version FROM glossary_terms
-            WHERE LOWER(physical_term) = LOWER(?)
+            WHERE table_guid = ? AND LOWER(physical_term) = LOWER(?)
             ORDER BY stored_at ASC, id ASC
-        """, (g["physical_term"],)).fetchall()
+        """, (g["table_guid"], g["physical_term"])).fetchall()
         needs_fix = any(rows[i]["version"] != i + 1 for i in range(len(rows)))
         if needs_fix:
             for seq, row in enumerate(rows, start=1):
@@ -318,11 +323,11 @@ def sync_from_audit_log(audit_log_path):
                 WHERE table_guid = ? AND LOWER(physical_term) = LOWER(?) AND active = 1
             """, (asset_guid, phys_term))
 
-        # Get next version (global per physical_term)
+        # Get next version scoped to this table
         row = conn.execute("""
             SELECT MAX(version) as max_ver FROM glossary_terms
-            WHERE LOWER(physical_term) = LOWER(?)
-        """, (phys_term,)).fetchone()
+            WHERE LOWER(physical_term) = LOWER(?) AND table_guid = ?
+        """, (phys_term, asset_guid)).fetchone()
         next_ver = (row["max_ver"] or 0) + 1
 
         conn.execute("""
