@@ -141,9 +141,9 @@ def get_all_terms(table_guid=None, source_filter=None):
 
 
 def get_approved_history(table_guid=None, source_filter=None):
-    """Get all approved terms (active + previously-active) excluding rejected, for History view."""
+    """Get all terms (active, inactive, rejected) for History view."""
     conn = _get_conn()
-    query = "SELECT * FROM glossary_terms WHERE status IN ('Approved', 'Approved (Merged)')"
+    query = "SELECT * FROM glossary_terms WHERE 1=1"
     params = []
     if table_guid:
         query += " AND table_guid = ?"
