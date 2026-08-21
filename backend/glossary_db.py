@@ -171,12 +171,9 @@ def get_latest_approved_per_term(table_guid=None, source_filter=None):
         params.append(source_filter)
     where_clause = " AND ".join(where_parts)
 
-    # Subquery: max version per physical_term within the same scope
-    sub_where_parts = ["g2.status IN ('Approved', 'Approved (Merged)')"]
+    # Subquery: max version per physical_term within the same table
+    sub_where_parts = ["g2.status IN ('Approved', 'Approved (Merged)')", "g2.table_guid = g.table_guid"]
     sub_params = []
-    if table_guid:
-        sub_where_parts.append("g2.table_guid = ?")
-        sub_params.append(table_guid)
     sub_where_clause = " AND ".join(sub_where_parts)
 
     query = f"""
