@@ -130,5 +130,77 @@
         "table_name": "PATIENT_ID_PROOF",
         "term_type": "Column",
         "physical_term": "ID_NUMBER"
+    },
+    {
+        "term_id": "8acc859b-7fc3-492c-9504-b911947de32e",
+        "term_name": "Patient Identifier",
+        "definition": "A unique system-generated value assigned to each patient to distinguish and track their records within the healthcare system.",
+        "source": "MS Purview",
+        "confidence_score": 100,
+        "created_date": "2026-08-20T12:50:12.781857",
+        "table_name": "PATIENT_ID_PROOF",
+        "term_type": "Column",
+        "physical_term": "PATIENT_ID",
+        "classification": "Patient Identifier"
+    },
+    {
+        "term_id": "9303ce16-230a-415e-a79b-9a085a2aded8",
+        "term_name": "Identity Document Category",
+        "definition": "Specifies the type or category of identification document (such as passport, government ID, driver's license) provided by the patient for verification purposes.",
+        "source": "MS Purview",
+        "confidence_score": 90,
+        "created_date": "2026-08-20T12:50:12.815318",
+        "table_name": "PATIENT_ID_PROOF",
+        "term_type": "Column",
+        "physical_term": "ID_TYPE",
+        "classification": "Internal"
+    },
+    {
+        "term_id": "168b96ae-15fa-47e3-9092-10ad2afbd2af",
+        "term_name": "Identity Document Number",
+        "definition": "Denotes the unique alphanumeric identifier printed on the official identification document provided by the patient (for example, passport number, national identity, or driver's license number).",
+        "source": "MS Purview",
+        "confidence_score": 95,
+        "created_date": "2026-08-20T12:50:12.835265",
+        "table_name": "PATIENT_ID_PROOF",
+        "term_type": "Column",
+        "physical_term": "ID_NUMBER",
+        "classification": "Internal"
+    },
+    {
+        "term_id": "31e2da37-f1b7-46b3-909d-8dddc18d7543",
+        "term_name": "Patient Registry",
+        "definition": "A primary repository of demographic information for individuals receiving health-related services, providing identifiers, biographical data, and personal attributes necessary for patient engagement and record management.",
+        "source": "MS Purview",
+        "confidence_score": 90,
+        "created_date": "2026-08-20T12:50:12.852752",
+        "table_name": "PATIENT_MASTER",
+        "term_type": "Table",
+        "physical_term": "PATIENT_MASTER",
+        "classification": "MICROSOFT.BASE.CLASSIFICATION"
+    },
+    {
+        "term_id": "97666228-6a7b-429e-9afb-850647b6bf80",
+        "term_name": "Patient Unique Identifier",
+        "definition": "A system-generated value uniquely distinguishing each patient within the repository, ensuring accurate data association and retrieval across patient records.",
+        "source": "MS Purview",
+        "confidence_score": 98,
+        "created_date": "2026-08-20T12:50:12.868475",
+        "table_name": "PATIENT_MASTER",
+        "term_type": "Column",
+        "physical_term": "PATIENT_ID",
+        "classification": "Patient Identifier"
+    },
+    {
+        "term_id": "15df13c0-04f3-41e4-a713-7d740bc1f943",
+        "term_name": "Given Name",
+        "definition": "The primary personal name assigned to an individual, used in formal identification and communication processes.",
+        "source": "MS Purview",
+        "confidence_score": 99,
+        "created_date": "2026-08-20T12:50:12.877931",
+        "table_name": "PATIENT_MASTER",
+        "term_type": "Column",
+        "physical_term": "FIRST_NAME",
+        "classification": "MICROSOFT.PERSONAL.NAME"
     }
 ]

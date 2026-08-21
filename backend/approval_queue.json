@@ -166,5 +166,25 @@
         "approver_comment": "Pre-approved",
         "decision_date": "2026-07-30T10:58:54.079975",
         "created_date": "2026-07-15T10:50:56.247555"
+    },
+    {
+        "term_id": "31e2da37-f1b7-46b3-909d-8dddc18d7543",
+        "term_name": "Patient Registry",
+        "definition": "A primary repository of demographic information for individuals receiving health-related services, providing identifiers, biographical data, and personal attributes necessary for patient engagement and record management.",
+        "source": "MS Purview",
+        "confidence_score": 90,
+        "created_date": "2026-08-20T12:50:12.852752",
+        "table_name": "PATIENT_MASTER",
+        "term_type": "Table",
+        "physical_term": "PATIENT_MASTER",
+        "classification": "MICROSOFT.BASE.CLASSIFICATION",
+        "status": "Approved",
+        "conflict_checked": true,
+        "conflict_found": false,
+        "conflict_match_type": "No Conflict",
+        "existing_term_id": null,
+        "existing_term_name": null,
+        "approver_comment": "",
+        "decision_date": "2026-08-20T12:50:41.684446"
     }
 ]

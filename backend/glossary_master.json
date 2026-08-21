@@ -86,7 +86,7 @@
             "Source": "AI Suggester",
             "Confidence (%)": 95,
             "Active": 1,
-            "Version": 1,
+            "Version": 2,
             "Stored At": "2026-07-30T10:58:54.079975",
             "Status": "Approved"
         },
@@ -165,6 +165,23 @@
             "Active": 1,
             "Version": 1,
             "Stored At": "2026-07-30T10:58:54.079975",
+            "Status": "Approved"
+        }
+    ],
+    "workflow_PATIENT_MASTER": [
+        {
+            "entity_guid": "31e2da37-f1b7-46b3-909d-8dddc18d7543",
+            "table_guid": "workflow_PATIENT_MASTER",
+            "table_name": "PATIENT_MASTER",
+            "Business Term": "Patient Registry",
+            "Physical Term": "PATIENT_MASTER",
+            "Definition / Description": "A primary repository of demographic information for individuals receiving health-related services, providing identifiers, biographical data, and personal attributes necessary for patient engagement and record management.",
+            "Type": "Table",
+            "Source": "MS Purview",
+            "Confidence (%)": 90,
+            "Active": 1,
+            "Version": 1,
+            "Stored At": "2026-08-20T12:50:41.648224",
             "Status": "Approved"
         }
     ]

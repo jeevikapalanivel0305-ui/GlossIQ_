@@ -107,6 +107,7 @@ class WorkflowManager:
             "table_name":       entry.get("table_name", ""),
             "physical_term":    entry.get("physical_term") or entry.get("related_column") or "",
             "term_type":        entry.get("term_type", "Column"),
+            "classification":   entry.get("classification", ""),
             "conflict_found":   entry.get("conflict_found", False),
             "status":           final_status,
             "approver_comment": approver_comment,
@@ -179,10 +180,14 @@ class WorkflowManager:
                     if (r_phys and r_phys == entry_phys) or (r_biz and r_biz == entry_biz):
                         r["Active"] = 0
 
-            # Version = count of all records for this physical term + 1
-            same = [r for r in bucket
-                    if (r.get("Physical Term") or "").strip().lower() == entry_phys]
-            next_version = len(same) + 1
+            # Version = global count of all records for this physical term across all buckets + 1
+            all_same_phys = []
+            for bkt_records in master.values():
+                all_same_phys.extend(
+                    r for r in bkt_records
+                    if (r.get("Physical Term") or "").strip().lower() == entry_phys
+                )
+            next_version = len(all_same_phys) + 1
             bucket.append({
                 "entity_guid":              entry.get("term_id"),
                 "table_guid":               asset_guid,
@@ -190,6 +195,7 @@ class WorkflowManager:
                 "Business Term":            entry.get("term_name"),
                 "Physical Term":            entry.get("physical_term") or entry.get("term_name"),
                 "Definition / Description": entry.get("definition"),
+                "Classification":           entry.get("classification", ""),
                 "Type":                     entry.get("term_type", "Column"),
                 "Source":                   entry.get("source", "Manual"),
                 "Confidence (%)":           entry.get("confidence_score", 0),
@@ -588,7 +594,7 @@ class WorkflowManager:
         glossary_db.deactivate_term(asset_guid, phys_term)
         # Deactivate previous active record for this business term name
         glossary_db.deactivate_by_business_term(asset_guid, biz_term)
-        next_ver = glossary_db.get_next_version(asset_guid, phys_term)
+        next_ver = glossary_db.get_next_version(phys_term)
         glossary_db.store_term(
             entity_guid=term_id,
             table_guid=asset_guid,
@@ -653,7 +659,7 @@ class WorkflowManager:
         safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
         asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{term_id}"
         phys_term = entry.get("physical_term") or entry.get("term_name") or ""
-        next_ver = glossary_db.get_next_version(asset_guid, phys_term)
+        next_ver = glossary_db.get_next_version(phys_term)
         glossary_db.store_term(
             entity_guid=term_id,
             table_guid=asset_guid,
@@ -771,14 +777,8 @@ class WorkflowManager:
         if not entry:
             return False, "Term not found in queue"
 
-        # 1. Update existing audit log row in-place (no new row)
-        cls._update_audit_log_status(
-            term_name=entry.get("term_name"),
-            new_status="Approved (Merged)",
-            approver_comment=approver_comment,
-            new_term_id=term_id,
-            new_definition=entry.get("definition"),
-        )
+        # 1. Append new entry to audit log (preserves history for versioning)
+        cls._append_audit_log(entry, "Approved (Merged)", approver_comment)
 
         # 2. Rebuild Glossary Hub from audit log
         cls._rebuild_master_from_audit_log()
@@ -792,7 +792,7 @@ class WorkflowManager:
         glossary_db.deactivate_term(asset_guid, phys_term)
         # Deactivate previous active record for this business term name
         glossary_db.deactivate_by_business_term(asset_guid, biz_term)
-        next_ver = glossary_db.get_next_version(asset_guid, phys_term)
+        next_ver = glossary_db.get_next_version(phys_term)
         glossary_db.store_term(
             entity_guid=term_id,
             table_guid=asset_guid,

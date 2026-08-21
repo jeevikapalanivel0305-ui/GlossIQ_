@@ -140,6 +140,61 @@ def get_all_terms(table_guid=None, source_filter=None):
     return [dict(r) for r in rows]
 
 
+def get_approved_history(table_guid=None, source_filter=None):
+    """Get all approved terms (active + previously-active) excluding rejected, for History view."""
+    conn = _get_conn()
+    query = "SELECT * FROM glossary_terms WHERE status IN ('Approved', 'Approved (Merged)')"
+    params = []
+    if table_guid:
+        query += " AND table_guid = ?"
+        params.append(table_guid)
+    if source_filter:
+        query += " AND source = ?"
+        params.append(source_filter)
+    query += " ORDER BY LOWER(physical_term), version ASC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_latest_approved_per_term(table_guid=None, source_filter=None):
+    """Get only the latest approved version per physical_term. Used for History OFF."""
+    conn = _get_conn()
+    # Build WHERE clause for the scope
+    where_parts = ["g.status IN ('Approved', 'Approved (Merged)')"]
+    params = []
+    if table_guid:
+        where_parts.append("g.table_guid = ?")
+        params.append(table_guid)
+    if source_filter:
+        where_parts.append("g.source = ?")
+        params.append(source_filter)
+    where_clause = " AND ".join(where_parts)
+
+    # Subquery: max version per physical_term within the same scope
+    sub_where_parts = ["g2.status IN ('Approved', 'Approved (Merged)')"]
+    sub_params = []
+    if table_guid:
+        sub_where_parts.append("g2.table_guid = ?")
+        sub_params.append(table_guid)
+    sub_where_clause = " AND ".join(sub_where_parts)
+
+    query = f"""
+        SELECT g.* FROM glossary_terms g
+        WHERE {where_clause}
+        AND g.version = (
+            SELECT MAX(g2.version) FROM glossary_terms g2
+            WHERE LOWER(g2.physical_term) = LOWER(g.physical_term)
+            AND {sub_where_clause}
+        )
+        ORDER BY g.physical_term
+    """
+    all_params = params + sub_params
+    rows = conn.execute(query, all_params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_all_table_summaries(source_filter=None, since=None):
     """Get summary of all tables in the database. If 'since' is set, only count terms stored after that timestamp."""
     conn = _get_conn()
@@ -182,15 +237,43 @@ def get_table_names_with_active_terms(source_filter=None):
     return [dict(r) for r in rows]
 
 
-def get_next_version(table_guid, physical_term):
-    """Get the next version number for a physical term."""
+def get_next_version(physical_term, table_guid=None):
+    """Get the next version number for a physical term (global across all tables)."""
     conn = _get_conn()
     row = conn.execute("""
         SELECT MAX(version) as max_ver FROM glossary_terms
-        WHERE table_guid = ? AND LOWER(physical_term) = LOWER(?)
-    """, (table_guid, physical_term)).fetchone()
+        WHERE LOWER(physical_term) = LOWER(?)
+    """, (physical_term,)).fetchone()
     conn.close()
     return (row["max_ver"] or 0) + 1
+
+
+def fix_duplicate_versions():
+    """Fix any physical terms that have duplicate/incorrect version numbers by re-sequencing globally per physical_term."""
+    conn = _get_conn()
+    # Find physical terms with more than one record (need sequential versioning)
+    groups = conn.execute("""
+        SELECT physical_term
+        FROM glossary_terms
+        GROUP BY LOWER(physical_term)
+        HAVING COUNT(*) > 1
+    """).fetchall()
+    fixed = 0
+    for g in groups:
+        rows = conn.execute("""
+            SELECT id, version FROM glossary_terms
+            WHERE LOWER(physical_term) = LOWER(?)
+            ORDER BY stored_at ASC, id ASC
+        """, (g["physical_term"],)).fetchall()
+        needs_fix = any(rows[i]["version"] != i + 1 for i in range(len(rows)))
+        if needs_fix:
+            for seq, row in enumerate(rows, start=1):
+                conn.execute("UPDATE glossary_terms SET version = ? WHERE id = ?", (seq, row["id"]))
+                fixed += 1
+    if fixed:
+        conn.commit()
+    conn.close()
+    return fixed
 
 
 def sync_from_audit_log(audit_log_path):
@@ -227,7 +310,7 @@ def sync_from_audit_log(audit_log_path):
         phys_term = entry.get("physical_term") or entry.get("term_name") or ""
         is_approved = entry.get("status") in ("Approved", "Approved (Merged)")
 
-        # Deactivate previous active record for this physical term (SCD Type 2)
+        # Deactivate previous active record for this physical term in same table (SCD Type 2)
         if is_approved:
             conn.execute("""
                 UPDATE glossary_terms 
@@ -235,18 +318,18 @@ def sync_from_audit_log(audit_log_path):
                 WHERE table_guid = ? AND LOWER(physical_term) = LOWER(?) AND active = 1
             """, (asset_guid, phys_term))
 
-        # Get next version
+        # Get next version (global per physical_term)
         row = conn.execute("""
             SELECT MAX(version) as max_ver FROM glossary_terms
-            WHERE table_guid = ? AND LOWER(physical_term) = LOWER(?)
-        """, (asset_guid, phys_term)).fetchone()
+            WHERE LOWER(physical_term) = LOWER(?)
+        """, (phys_term,)).fetchone()
         next_ver = (row["max_ver"] or 0) + 1
 
         conn.execute("""
             INSERT INTO glossary_terms 
             (entity_guid, table_guid, table_name, business_term, physical_term,
-             description, type, source, confidence, active, version, status, stored_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             description, classification, type, source, confidence, active, version, status, stored_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             entry.get("term_id", ""),
             asset_guid,
@@ -254,8 +337,9 @@ def sync_from_audit_log(audit_log_path):
             entry.get("term_name", ""),
             phys_term,
             entry.get("definition", ""),
+            entry.get("classification", ""),
             entry.get("term_type", "Column"),
-            entry.get("source", "AI Suggester"),
+            entry.get("source", "MS Purview"),
             entry.get("confidence_score", 0),
             1 if is_approved else 0,
             next_ver,
@@ -317,6 +401,64 @@ def sync_from_master_json(master_path):
     conn.commit()
     conn.close()
     return imported
+
+
+def get_ai_coverage_stats():
+    """Return (ai_term_count, total_term_count) for active approved terms."""
+    conn = _get_conn()
+    row = conn.execute("""
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN source IN ('AI Suggester', 'MS Purview', 'Databricks Unity Catalog') THEN 1 ELSE 0 END) as ai_count
+        FROM glossary_terms
+        WHERE active = 1 AND status NOT IN ('Rejected')
+    """).fetchone()
+    conn.close()
+    return (row["ai_count"] or 0, row["total"] or 0)
+
+
+def get_active_glossary_terms_for_lineage():
+    """Return distinct active glossary terms with status='Approved' or 'Approved (Merged)' for lineage dropdown."""
+    conn = _get_conn()
+    rows = conn.execute("""
+        SELECT DISTINCT business_term
+        FROM glossary_terms
+        WHERE active = 1 AND status IN ('Approved', 'Approved (Merged)')
+        AND business_term IS NOT NULL AND business_term != ''
+        ORDER BY business_term
+    """).fetchall()
+    conn.close()
+    return [r["business_term"] for r in rows]
+
+
+def check_approved_term_exists(term_name, physical_term=None):
+    """Check if a same/similar term is already approved. Returns list of matching approved terms with max version."""
+    conn = _get_conn()
+    results = []
+    # Match by business term name
+    rows = conn.execute("""
+        SELECT business_term, physical_term, MAX(version) as version, status, source
+        FROM glossary_terms
+        WHERE status IN ('Approved', 'Approved (Merged)')
+        AND LOWER(business_term) = LOWER(?)
+        GROUP BY LOWER(business_term), LOWER(physical_term)
+    """, (term_name.strip(),)).fetchall()
+    results.extend([dict(r) for r in rows])
+    # Also match by physical term if provided
+    if physical_term and physical_term.strip():
+        phys_rows = conn.execute("""
+            SELECT business_term, physical_term, MAX(version) as version, status, source
+            FROM glossary_terms
+            WHERE status IN ('Approved', 'Approved (Merged)')
+            AND LOWER(physical_term) = LOWER(?)
+            GROUP BY LOWER(business_term), LOWER(physical_term)
+        """, (physical_term.strip(),)).fetchall()
+        seen = {(r['business_term'].lower(), r['physical_term'].lower()) for r in results}
+        for r in phys_rows:
+            if (r['business_term'].lower(), r['physical_term'].lower()) not in seen:
+                results.append(dict(r))
+    conn.close()
+    return results
 
 
 # Initialize DB on import
