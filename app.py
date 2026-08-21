@@ -590,7 +590,7 @@ def render_integrations_tab():
     connectors = st.session_state.integration_connectors
 
     # ── Show dialog popup if a connector is selected ──────────────────────────
-    _open_cfg = st.session_state.get("_open_integration_config")
+    _open_cfg = st.session_state.pop("_open_integration_config", None)
     if _open_cfg and _open_cfg in connectors:
         _show_connector_dialog(_open_cfg)
 
