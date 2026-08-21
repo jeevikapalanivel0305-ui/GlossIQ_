@@ -1302,7 +1302,7 @@ def render_review_tab():
         _connected_sources = []
         _connector_source_map = {
             'Databricks Unity': 'Databricks Unity Catalog',
-            'Microsoft Purview': 'Microsoft Purview',
+            'Microsoft Purview': 'MS Purview',
             'Collibra': 'Collibra',
             'Atlan': 'Atlan',
             'dbt Cloud': 'dbt Cloud',
@@ -1333,7 +1333,7 @@ def render_review_tab():
                 _default_src = "Databricks Unity Catalog"
             else:
                 _default_src = "All Sources"
-            src_filter_col, tbl_filter_col, _ = st.columns([1, 1, 2])
+            src_filter_col, tbl_filter_col, status_filter_col = st.columns([1, 1, 1])
             with src_filter_col:
                 _src_opts = ["All Sources"] + all_sources
                 selected_source = st.selectbox(
@@ -1354,9 +1354,20 @@ def render_review_tab():
                     key="audit_table_filter",
                 )
 
-            filtered_log = unique if selected_table == "All Tables" else [
-                e for e in unique if (e.get("table_name") or "—") == selected_table
-            ]
+            # ── Status filter ─────────────────────────────────────────────────
+            all_statuses = sorted(set(e.get("status", "") for e in unique))
+            with status_filter_col:
+                selected_status = st.selectbox(
+                    "Filter by Status",
+                    ["All"] + all_statuses,
+                    key="audit_status_filter",
+                )
+
+            filtered_log = unique
+            if selected_table != "All Tables":
+                filtered_log = [e for e in filtered_log if (e.get("table_name") or "—") == selected_table]
+            if selected_status != "All":
+                filtered_log = [e for e in filtered_log if e.get("status") == selected_status]
 
             # ── Render table-by-table ─────────────────────────────────────────
             tables_in_view = sorted(set(e.get("table_name", "") or "—" for e in filtered_log))
@@ -1375,6 +1386,7 @@ def render_review_tab():
                         "Physical Term":   e.get("physical_term") or "—",
                         "Business Term":   e.get("term_name"),
                         "Status":          e.get("status"),
+                        "Classification":  e.get("classification", ""),
                         "Source":          e.get("source"),
                         "Confidence":      e.get("confidence_score"),
                         "Conflict":        "Yes" if e.get("conflict_found") else "No",
