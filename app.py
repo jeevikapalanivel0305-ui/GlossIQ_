@@ -2443,7 +2443,7 @@ def render_master_glossary_tab():
         )
 
         # ── Sub-tabs: All Terms vs Current Session ───────────────────────────
-        hub_tab_all, hub_tab_session = st.tabs(["📋 All Terms", "✅ Current Session Approvals"])
+        hub_tab_session, hub_tab_all = st.tabs(["✅ Current Session Approvals", "📋 All Terms"])
 
         with hub_tab_all:
             tb_left, tb_right = st.columns([3, 1])
