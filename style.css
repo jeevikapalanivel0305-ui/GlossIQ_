@@ -38,9 +38,13 @@ footer {
 /* SIDEBAR CUSTOMIZATION                   */
 /* ======================================= */
 [data-testid="stSidebar"] {
-    background-color: #ffffff !important;
-    border-right: 1px solid #E5E7EB;
-    padding-top: 10px;
+    background-color: #FFFFFF !important;
+    border-right: 1px solid #E4E8EE;
+    padding-top: 0;
+}
+
+section[data-testid="stSidebar"] {
+    width: 270px !important;
 }
 
 /* Hide standard Nav in sidebar */
@@ -49,19 +53,48 @@ footer {
 }
 
 .sidebar-category {
-    font-size: 10px;
+    font-size: 7px;
     font-weight: 700;
     text-transform: uppercase;
-    color: #9CA3AF;
-    letter-spacing: 0.1em;
-    margin: 20px 0 8px 24px;
+    color: #8793A4;
+    letter-spacing: 0.13em;
+    margin: 18px 0 5px 14px;
 }
 
 .sidebar-brand {
-    padding: 20px 24px;
+    padding: 14px 14px 4px;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
+}
+
+.sidebar-brand-mark {
+    width: 22px;
+    height: 22px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #C90000;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.sidebar-brand-name {
+    color: #172238;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+}
+
+.sidebar-brand-subtitle {
+    padding: 0 14px 10px;
+    color: #8995A6;
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
 }
 
 .sidebar-item {
@@ -103,30 +136,94 @@ footer {
 /* Sidebar Buttons Styling */
 [data-testid="stSidebar"] div.stButton > button {
     border: none !important;
+    box-shadow: none !important;
+    outline: none !important;
     text-align: left !important;
     justify-content: flex-start !important;
-    padding: 12px 24px !important;
-    height: 48px !important;
-    font-size: 14px !important;
+    padding: 5px 9px !important;
+    height: 28px !important;
+    font-size: 13px !important;
     font-weight: 500 !important;
     background-color: transparent !important;
-    border-radius: 8px !important;
-    margin: 4px 12px !important;
-    color: #4B5563 !important;
-    width: calc(100% - 24px) !important;
+    border-radius: 4px !important;
+    margin: 2px 8px !important;
+    color: #24334B !important;
+    width: calc(100% - 16px) !important;
     transition: all 0.2s ease !important;
 }
 
+[data-testid="stSidebar"] div.stButton > button p {
+    font-size: 13px !important;
+    font-weight: inherit !important;
+}
+
 [data-testid="stSidebar"] div.stButton > button:hover {
-    background-color: #F3F4F6 !important;
-    color: #111827 !important;
+    background-color: transparent !important;
+    border: none !important;
+    color: #172238 !important;
 }
 
 [data-testid="stSidebar"] div.stButton > button[kind="primary"] {
-    background-color: #FEF2F2 !important;
-    color: #CC0000 !important;
-    border-left: 4px solid #CC0000 !important;
+    background-color: #C90000 !important;
+    color: #FFFFFF !important;
+    border: none !important;
+    box-shadow: none !important;
     font-weight: 600 !important;
+}
+
+[data-testid="stSidebar"] div.stButton > button[kind="primary"] span {
+    color: #FFFFFF !important;
+}
+
+.sidebar-user {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 270px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: #ffffff;
+    border-top: 1px solid #EEF1F5;
+}
+
+.sidebar-user-avatar {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: #CC0000;
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.sidebar-user-name {
+    overflow: hidden;
+    color: #111827;
+    font-size: 10px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-user-role {
+    color: #6B7280;
+    font-size: 8px;
+}
+
+@media (max-width: 768px) {
+    section[data-testid="stSidebar"] {
+        width: min(270px, 86vw) !important;
+    }
+
+    .sidebar-user {
+        width: min(270px, 86vw);
+    }
 }
 
 /* ======================================= */
@@ -187,10 +284,15 @@ footer {
 }
 
 .workbench-title {
-    font-size: 32px;
+    font-size: 22px !important;
     font-weight: 700;
     color: #111827;
     margin: 0;
+}
+
+[data-testid="stMain"] h1.workbench-title {
+    font-size: 22px !important;
+    line-height: 1.2 !important;
 }
 
 .workbench-desc {
@@ -290,6 +392,25 @@ div.stButton>button[kind="secondary"] {
     background-color: #ffffff !important;
     border: 1px solid #D1D5DB !important;
     color: #374151 !important;
+}
+
+/* Keep the Qualix-style sidebar rows flat; global buttons retain their cards. */
+[data-testid="stSidebar"] div.stButton > button[kind="secondary"] {
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: #24334B !important;
+    font-size: 13px !important;
+    padding: 5px 9px !important;
+}
+
+[data-testid="stSidebar"] div.stButton > button[kind="secondary"] p {
+    font-size: 13px !important;
+}
+
+[data-testid="stSidebar"] div.stButton > button[kind="primary"],
+[data-testid="stSidebar"] div.stButton > button[kind="primary"] p {
+    font-size: 13px !important;
 }
 
 /* ======================================= */
@@ -404,6 +525,230 @@ div.stButton>button[kind="secondary"] {
     color: #4B5563 !important;
 }
 
+/* GlossIQ red selected state for native checkboxes, including Asset Search. */
+[data-testid="stCheckbox"] input[type="checkbox"] {
+    accent-color: #C90000 !important;
+    color-scheme: light !important;
+}
+
+[data-testid="stCheckbox"] input[type="checkbox"]:checked + div,
+[data-testid="stCheckbox"] input[type="checkbox"]:checked ~ div {
+    background-color: #C90000 !important;
+    border-color: #C90000 !important;
+}
+
+[data-testid="stCheckbox"] label[data-baseweb="checkbox"] input:checked + div,
+[data-testid="stCheckbox"] label[data-baseweb="checkbox"] input:checked ~ div,
+[data-testid="stCheckbox"] label[data-baseweb="checkbox"] [aria-checked="true"] {
+    background-color: #C90000 !important;
+    border-color: #C90000 !important;
+    color: #C90000 !important;
+}
+
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] > div,
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] > div[aria-checked="true"],
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] > div[data-checked="true"] {
+    background-color: #C90000 !important;
+    border-color: #C90000 !important;
+}
+
+[data-testid="stCheckbox"] [data-baseweb="checkbox"][aria-checked="true"],
+[data-testid="stCheckbox"] [data-baseweb="checkbox"][data-checked="true"],
+[data-testid="stCheckbox"] [data-baseweb="checkbox"]:has(input:checked) {
+    background-color: #C90000 !important;
+    border-color: #C90000 !important;
+    color: #FFFFFF !important;
+}
+
+[data-testid="stCheckbox"] [data-baseweb="checkbox-input"] > div,
+[data-testid="stCheckbox"] [data-baseweb="checkbox-input"] input:checked + div,
+[data-testid="stCheckbox"] [data-baseweb="checkbox-input"] input:checked ~ div {
+    background-color: #C90000 !important;
+    border-color: #C90000 !important;
+    color: #FFFFFF !important;
+}
+
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] [aria-checked="true"],
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] [data-checked="true"],
+[data-testid="stCheckbox"] [role="checkbox"][aria-checked="true"] {
+    background-color: #C90000 !important;
+    border-color: #C90000 !important;
+}
+
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] span[aria-checked="true"],
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] div[aria-checked="true"] {
+    background-color: #C90000 !important;
+    border-color: #C90000 !important;
+}
+
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] svg path,
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] svg polyline,
+[data-testid="stCheckbox"] [role="checkbox"][aria-checked="true"] svg path,
+[data-testid="stCheckbox"] [role="checkbox"][aria-checked="true"] svg polyline {
+    stroke: #FFFFFF !important;
+    fill: none !important;
+}
+
+[data-testid="stCheckbox"] label[data-baseweb="checkbox"] input:checked + div svg,
+[data-testid="stCheckbox"] label[data-baseweb="checkbox"] input:checked + div svg path,
+[data-testid="stCheckbox"] label[data-baseweb="checkbox"] input:checked + div svg polyline {
+    color: #FFFFFF !important;
+    stroke: #FFFFFF !important;
+    fill: none !important;
+}
+
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] > div svg,
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] > div svg path,
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] > div svg polyline {
+    color: #FFFFFF !important;
+    stroke: #FFFFFF !important;
+    fill: none !important;
+}
+
+[data-testid="stCheckbox"] [data-baseweb="checkbox"][aria-checked="true"] svg,
+[data-testid="stCheckbox"] [data-baseweb="checkbox"][aria-checked="true"] svg path,
+[data-testid="stCheckbox"] [data-baseweb="checkbox"][aria-checked="true"] svg polyline,
+[data-testid="stCheckbox"] [data-baseweb="checkbox"]:has(input:checked) svg,
+[data-testid="stCheckbox"] [data-baseweb="checkbox"]:has(input:checked) svg path,
+[data-testid="stCheckbox"] [data-baseweb="checkbox"]:has(input:checked) svg polyline {
+    color: #FFFFFF !important;
+    stroke: #FFFFFF !important;
+    fill: none !important;
+}
+
+[data-testid="stCheckbox"] [data-baseweb="checkbox-input"] input:checked + div svg,
+[data-testid="stCheckbox"] [data-baseweb="checkbox-input"] input:checked + div svg path,
+[data-testid="stCheckbox"] [data-baseweb="checkbox-input"] input:checked + div svg polyline {
+    color: #FFFFFF !important;
+    stroke: #FFFFFF !important;
+    fill: none !important;
+}
+
+/* Streamlit version-independent checked state. */
+[data-testid="stCheckbox"]:has(input[type="checkbox"]:checked) [data-baseweb="checkbox"],
+[data-testid="stCheckbox"]:has(input[type="checkbox"]:checked) [data-baseweb="checkbox-input"],
+[data-testid="stCheckbox"]:has(input[type="checkbox"]:checked) [role="checkbox"] {
+    background: #C90000 !important;
+    background-color: #C90000 !important;
+    border-color: #C90000 !important;
+    color: #FFFFFF !important;
+}
+
+[data-testid="stCheckbox"]:has(input[type="checkbox"]:checked) svg,
+[data-testid="stCheckbox"]:has(input[type="checkbox"]:checked) svg * {
+    color: #FFFFFF !important;
+    stroke: #FFFFFF !important;
+    fill: #FFFFFF !important;
+}
+
+/* Direct checked appearance for Asset Search result checkboxes. */
+.st-key-asset_search_results [data-testid="stCheckbox"] input[type="checkbox"] {
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    width: 14px !important;
+    height: 14px !important;
+    margin: 0 !important;
+    border: 1px solid #C9D1DC !important;
+    border-radius: 3px !important;
+    background: #FFFFFF !important;
+    cursor: pointer !important;
+}
+
+.st-key-asset_search_results [data-testid="stCheckbox"] input[type="checkbox"]:checked {
+    background-color: #C90000 !important;
+    border-color: #C90000 !important;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.2 4.7 9 10 3' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+    background-position: center !important;
+    background-repeat: no-repeat !important;
+    background-size: 11px 11px !important;
+}
+
+/* Streamlit paints the visible selected square on this wrapper. */
+.st-key-asset_search_results [data-testid="stCheckbox"] [data-baseweb="checkbox-input"]:has(input:checked),
+.st-key-asset_search_results [data-testid="stCheckbox"] [data-baseweb="checkbox"]:has(input:checked) {
+    filter: hue-rotate(130deg) saturate(5) !important;
+}
+
+/* Asset selection controls use native Material checkbox icons. */
+.st-key-asset_search_results div.stButton > button {
+    min-width: 28px !important;
+    width: 28px !important;
+    height: 28px !important;
+    padding: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+
+.st-key-asset_search_results div.stButton > button[kind="primary"] {
+    background: #C90000 !important;
+    background-color: #C90000 !important;
+    border: 1px solid #C90000 !important;
+    border-radius: 5px !important;
+    color: #FFFFFF !important;
+}
+
+.st-key-asset_search_results div.stButton > button[kind="secondary"] {
+    background: #FFFFFF !important;
+    background-color: #FFFFFF !important;
+    border: 1px solid #D4DAE2 !important;
+    border-radius: 5px !important;
+    color: #AAB3C0 !important;
+}
+
+.st-key-asset_search_results div.stButton > button span {
+    color: inherit !important;
+}
+
+.asset-fetch-success {
+    display: inline-block;
+    width: fit-content;
+    margin: 8px 0 12px;
+    padding: 8px 14px;
+    border-left: 3px solid #C90000;
+    border-radius: 4px;
+    background: #FFF1F1;
+    color: #C90000;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* Direct widget-key hook for Streamlit's rendered Asset Search controls. */
+[class*="st-key-search_sel_"] div.stButton > button[kind="primary"],
+[class*="st-key-search_sel_"] button[kind="primary"] {
+    min-width: 20px !important;
+    width: 20px !important;
+    min-height: 20px !important;
+    height: 20px !important;
+    padding: 0 !important;
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
+    color: #C90000 !important;
+    box-shadow: none !important;
+}
+
+[class*="st-key-search_sel_"] div.stButton > button[kind="primary"] span,
+[class*="st-key-search_sel_"] button[kind="primary"] span {
+    color: #C90000 !important;
+    font-size: 14px !important;
+}
+
+[class*="st-key-search_sel_"] div.stButton > button[kind="secondary"],
+[class*="st-key-search_sel_"] button[kind="secondary"] {
+    min-width: 20px !important;
+    width: 20px !important;
+    min-height: 20px !important;
+    height: 20px !important;
+    padding: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    background-color: transparent !important;
+    color: #AAB3C0 !important;
+}
+
 /* Asset badge in toolbar */
 .hub-asset-badge {
     font-size: 14px;
@@ -451,4 +796,73 @@ div.stButton>button[kind="secondary"] {
     padding: 0 !important;
     border: none !important;
     box-shadow: none !important;
+}
+
+/* ======================================= */
+/* MULTISELECT TAGS — LIGHT RED            */
+/* ======================================= */
+
+/* Tag pill background */
+[data-baseweb="tag"] {
+    background-color: #FEE2E2 !important;
+    background: #FEE2E2 !important;
+    border-color: #FECACA !important;
+    color: #991B1B !important;
+    border-radius: 6px !important;
+}
+
+/* Tag text */
+[data-baseweb="tag"] span,
+[data-baseweb="tag"] > span {
+    color: #991B1B !important;
+}
+
+/* Tag close (×) button */
+[data-baseweb="tag"] [role="presentation"],
+[data-baseweb="tag"] svg {
+    color: #991B1B !important;
+    fill: #991B1B !important;
+    opacity: 0.7;
+}
+
+[data-baseweb="tag"] [role="presentation"]:hover,
+[data-baseweb="tag"] svg:hover {
+    opacity: 1;
+}
+
+/* Multiselect dropdown border — default & focused */
+[data-baseweb="select"] > div {
+    border-color: #E5E7EB !important;
+}
+
+[data-baseweb="select"] > div:focus-within {
+    border-color: #D1D5DB !important;
+    box-shadow: 0 0 0 1px #D1D5DB !important;
+}
+
+/* Streamlit multiselect wrapper override */
+.stMultiSelect [data-baseweb="tag"] {
+    background-color: #FEE2E2 !important;
+    background: #FEE2E2 !important;
+    border-color: #FECACA !important;
+}
+
+.stMultiSelect [data-baseweb="tag"] * {
+    color: #991B1B !important;
+}
+
+/* ======================================= */
+/* TEXTAREA — VISIBLE RED BORDER           */
+/* ======================================= */
+
+/* Subtle border on all textareas */
+.stTextArea textarea {
+    border: 1px solid #D1D5DB !important;
+    border-radius: 8px !important;
+    transition: box-shadow 0.2s ease;
+}
+
+.stTextArea textarea:focus {
+    border-color: #9CA3AF !important;
+    box-shadow: 0 0 0 1px #9CA3AF !important;
 }

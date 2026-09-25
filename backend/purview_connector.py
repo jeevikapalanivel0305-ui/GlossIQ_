@@ -343,20 +343,62 @@ class PurviewConnector:
         except requests.exceptions.RequestException as e:
             raise Exception(f"Get glossaries failed: {str(e)}")
 
+    def get_all_glossary_terms(self, glossary_guid, debug=False):
+        """Get all terms in a glossary directly from Atlas API"""
+        success, msg = self.authenticate(debug=debug)
+        if not success:
+            return []
+
+        url = f"{self.base_url}/datamap/api/atlas/v2/glossary/{glossary_guid}/terms"
+        try:
+            r = requests.get(url, headers=self._headers(), timeout=30)
+            if r.status_code == 200:
+                return r.json()
+            return []
+        except Exception:
+            return []
+
+    def get_glossary_terms(self, glossary_guid, debug=False):
+        """GET https://<purview-account>.purview.azure.com/datamap/api/atlas/v2/glossary/{glossaryGuid}/terms"""
+        success, msg = self.authenticate(debug=debug)
+        if not success:
+            raise Exception(f"401 Authentication/token problem: {msg}")
+
+        url = f"{self.base_url}/datamap/api/atlas/v2/glossary/{glossary_guid}/terms"
+        try:
+            r = requests.get(url, headers=self._headers(), timeout=30)
+            print(f"Purview glossary terms API response: {r.status_code}")
+            if r.status_code == 200:
+                return r.json()
+            elif r.status_code == 401:
+                raise Exception(f"401 Authentication problem: {r.text[:300]}")
+            elif r.status_code == 403:
+                raise Exception(f"403 Permission problem: {r.text[:300]}")
+            elif r.status_code == 404:
+                raise Exception(f"404 Glossary GUID '{glossary_guid}' not found: {r.text[:300]}")
+            else:
+                raise Exception(f"HTTP {r.status_code}: {r.text[:300]}")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Fetch glossary terms failed: {str(e)}")
+
     # =========================================================
     # CREATE GLOSSARY TERM
     # =========================================================
-    def create_glossary_term(self, name, description, glossary_guid, debug=False):
-        """Create a new glossary term in Purview"""
+    def create_glossary_term(self, name, description, glossary_guid, long_description=None, status="Approved", debug=False):
+        """Create a new glossary term in Purview via Datamap Atlas REST API"""
+        print(f"Creating glossary term in Purview: '{name}' (Glossary GUID: {glossary_guid})...")
         success, msg = self.authenticate(debug=debug)
         if not success:
-            raise Exception(f"Authentication failed: {msg}")
+            print(f"Purview glossary API response: 401 (Authentication failed: {msg})")
+            raise Exception(f"401 Authentication/token problem: {msg}")
 
         url = f"{self.base_url}/datamap/api/atlas/v2/glossary/term"
         
         payload = {
             "name": name,
             "shortDescription": description,
+            "longDescription": long_description if long_description else description,
+            "status": status,
             "anchor": {
                 "glossaryGuid": glossary_guid
             }
@@ -364,29 +406,79 @@ class PurviewConnector:
 
         try:
             r = requests.post(url, headers=self._headers(), json=payload, timeout=30)
-            if r.status_code == 409:
-                raise Exception(f"Term '{name}' already exists in Purview")
-            elif r.status_code not in (200, 201):
-                raise Exception(f"Failed to create term '{name}' (HTTP {r.status_code}): {r.text[:500]}")
-            return r.json()
+            print(f"Purview glossary API response: {r.status_code}")
+            
+            if r.status_code in (200, 201):
+                res_data = r.json()
+                term_guid = res_data.get("guid") if isinstance(res_data, dict) else None
+                print(f"Purview term created successfully: {term_guid}")
+                return res_data
+            elif r.status_code == 409:
+                print(f"Purview glossary API response: 409 (Term '{name}' already exists in Purview)")
+                existing_guid = self.get_term_by_name(name, glossary_guid=glossary_guid)
+                print(f"Purview term existing GUID retrieved: {existing_guid}")
+                return {"guid": existing_guid, "status": "already_exists"}
+            elif r.status_code == 400:
+                err = f"400 Invalid request/payload: {r.text[:300]}"
+                print(f"Purview glossary API response: {err}")
+                raise Exception(err)
+            elif r.status_code == 401:
+                err = f"401 Authentication/token problem: {r.text[:300]}"
+                print(f"Purview glossary API response: {err}")
+                raise Exception(err)
+            elif r.status_code == 403:
+                err = f"403 Purview permission problem: {r.text[:300]}"
+                print(f"Purview glossary API response: {err}")
+                raise Exception(err)
+            elif r.status_code == 404:
+                err = f"404 Incorrect Purview endpoint or Glossary GUID '{glossary_guid}': {r.text[:300]}"
+                print(f"Purview glossary API response: {err}")
+                raise Exception(err)
+            elif r.status_code >= 500:
+                err = f"{r.status_code} Purview service error: {r.text[:300]}"
+                print(f"Purview glossary API response: {err}")
+                raise Exception(err)
+            else:
+                err = f"HTTP {r.status_code} error from Purview: {r.text[:300]}"
+                print(f"Purview glossary API response: {err}")
+                raise Exception(err)
+
         except requests.exceptions.RequestException as e:
-            raise Exception(f"Create glossary term failed: {str(e)}")
+            err = f"Request Exception connecting to Purview: {str(e)}"
+            print(f"Purview glossary API response: {err}")
+            raise Exception(err)
 
     def update_glossary_term(self, term_guid, name, description, glossary_guid, debug=False):
-        """Update an existing glossary term in Purview (full replace)."""
+        """Update an existing glossary term in Purview (partial endpoint with fallback)."""
         success, msg = self.authenticate(debug=debug)
         if not success:
             raise Exception(f"Authentication failed: {msg}")
 
-        url = f"{self.base_url}/datamap/api/atlas/v2/glossary/term/{term_guid}"
-        payload = {
+        # Try exact user-specified partial update endpoint: PUT /datamap/api/atlas/v2/glossary/term/{termId}/partial?api-version=2023-09-01
+        url_partial = f"{self.base_url}/datamap/api/atlas/v2/glossary/term/{term_guid}/partial"
+        params = {"api-version": "2023-09-01"}
+        payload_partial = {
+            "name": name,
+            "shortDescription": description
+        }
+
+        try:
+            r = requests.put(url_partial, headers=self._headers(), params=params, json=payload_partial, timeout=30)
+            if r.status_code in (200, 201, 204):
+                return r.json() if r.text else True
+        except Exception:
+            pass
+
+        # Fallback to standard term update endpoint
+        url_full = f"{self.base_url}/datamap/api/atlas/v2/glossary/term/{term_guid}"
+        payload_full = {
             "guid": term_guid,
             "name": name,
             "shortDescription": description,
             "anchor": {"glossaryGuid": glossary_guid},
         }
         try:
-            r = requests.put(url, headers=self._headers(), json=payload, timeout=30)
+            r = requests.put(url_full, headers=self._headers(), json=payload_full, timeout=30)
             if r.status_code not in (200, 201):
                 raise Exception(f"Failed to update term '{name}' (HTTP {r.status_code}): {r.text[:500]}")
             return r.json()
@@ -412,7 +504,7 @@ class PurviewConnector:
         except Exception:
             return None
 
-    def get_term_by_name(self, term_name, debug=False):
+    def get_term_by_name(self, term_name, glossary_guid=None, debug=False):
         """Search for a glossary term by its exact name and return its GUID"""
         success, msg = self.authenticate(debug=debug)
         if not success:
@@ -431,29 +523,67 @@ class PurviewConnector:
             if r.status_code == 200:
                 results = r.json().get('value', [])
                 for res in results:
-                    # Case insensitive match for safety
                     if res.get('name', '').lower() == term_name.lower():
                         return res.get('id')
-            return None
         except requests.exceptions.RequestException:
-            return None
+            pass
+
+        if glossary_guid:
+            terms = self.get_all_glossary_terms(glossary_guid)
+            for t in terms:
+                if isinstance(t, dict) and t.get('name', '').lower() == term_name.lower():
+                    return t.get('termGuid') or t.get('guid')
+
+        return None
 
     def assign_term_to_entity(self, term_guid, entity_guid, debug=False):
-        """Assign an existing glossary term to an entity"""
+        """Assign an existing glossary term to an entity with multiple Purview API fallbacks"""
         success, msg = self.authenticate(debug=debug)
         if not success:
             raise Exception(f"Authentication failed: {msg}")
 
-        url = f"{self.base_url}/datamap/api/atlas/v2/glossary/terms/{term_guid}/assignedEntities"
-        payload = [{"guid": entity_guid}]
+        headers = self._headers()
 
+        # Method 1: POST /datamap/api/atlas/v2/glossary/terms/{term_guid}/assignedEntities
+        url1 = f"{self.base_url}/datamap/api/atlas/v2/glossary/terms/{term_guid}/assignedEntities"
+        payload1 = [{"guid": entity_guid}]
         try:
-            r = requests.post(url, headers=self._headers(), json=payload, timeout=30)
-            if r.status_code not in (200, 204):
-                raise Exception(f"Failed to assign term (HTTP {r.status_code}): {r.text[:500]}")
-            return True
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Assign term failed: {str(e)}")
+            r1 = requests.post(url1, headers=headers, json=payload1, timeout=30)
+            if r1.status_code in (200, 201, 204):
+                return True
+        except Exception:
+            pass
+
+        # Method 2: POST with relationshipStatus ACTIVE
+        payload2 = [{"guid": entity_guid, "relationshipStatus": "ACTIVE"}]
+        try:
+            r2 = requests.post(url1, headers=headers, json=payload2, timeout=30)
+            if r2.status_code in (200, 201, 204):
+                return True
+        except Exception:
+            pass
+
+        # Method 3: Update Entity Meanings directly via GET + PUT /datamap/api/atlas/v2/entity/guid/{entity_guid}
+        url3 = f"{self.base_url}/datamap/api/atlas/v2/entity/guid/{entity_guid}"
+        try:
+            r3 = requests.get(url3, headers=headers, timeout=30)
+            if r3.status_code == 200:
+                entity_obj = r3.json()
+                if isinstance(entity_obj, dict) and "entity" in entity_obj:
+                    entity = entity_obj["entity"]
+                    meanings = entity.get("meanings", [])
+                    if not any(isinstance(m, dict) and m.get("termGuid") == term_guid for m in meanings):
+                        meanings.append({"termGuid": term_guid})
+                        entity["meanings"] = meanings
+                        r_put = requests.put(f"{self.base_url}/datamap/api/atlas/v2/entity", headers=headers, json=entity_obj, timeout=30)
+                        if r_put.status_code in (200, 201, 204):
+                            return True
+        except Exception:
+            pass
+
+        return False
+
+
 
     def unassign_term_from_entity(self, term_guid, entity_guid, debug=False):
         """Remove an existing glossary term assignment from an entity"""

@@ -120,12 +120,15 @@ class WorkflowManager:
         """
         Find the existing audit log row for term_name and update its status in-place.
         Optionally updates term_id, definition, approver_comment and decision_date.
-        Used by approve_with_merge to avoid a duplicate row.
+        Used by approve_with_merge and registration workflow to update status to Registered.
         """
         log = cls.load_audit_log()
         name_lower = (term_name or "").strip().lower()
+        found = False
         for row in log:
-            if (row.get("term_name") or "").strip().lower() == name_lower:
+            r_biz = (row.get("term_name") or "").strip().lower()
+            r_phys = (row.get("physical_term") or "").strip().lower()
+            if r_biz == name_lower or r_phys == name_lower:
                 row["status"] = new_status
                 row["decision_date"] = datetime.now().isoformat()
                 if new_status == "Approved (Merged)":
@@ -136,7 +139,24 @@ class WorkflowManager:
                     row["term_id"] = new_term_id
                 if new_definition is not None:
                     row["definition"] = new_definition
+                found = True
                 break
+        if not found and term_name:
+            log.append({
+                "term_id":          new_term_id or str(uuid.uuid4()),
+                "term_name":        term_name,
+                "definition":       new_definition or "",
+                "source":           "Snowflake",
+                "confidence_score": 100,
+                "table_name":       "REGISTERED TERMS",
+                "physical_term":    term_name,
+                "term_type":        "Column",
+                "classification":   "",
+                "conflict_found":   False,
+                "status":           new_status,
+                "approver_comment": approver_comment or "Registered back to Purview",
+                "decision_date":    datetime.now().isoformat(),
+            })
         cls._save(AUDIT_LOG_STORE, log)
 
     @classmethod
@@ -148,9 +168,9 @@ class WorkflowManager:
         Rejected entries are stored with Active=0 to preserve full decision history.
         """
         audit_log = cls.load_audit_log()
-        # All decided entries (Approved, Approved (Merged), Rejected), oldest first
+        # All decided entries (Approved, Approved (Merged), Registered, Rejected), oldest first
         decided = sorted(
-            [e for e in audit_log if e.get("status") in ("Approved", "Approved (Merged)", "Rejected")],
+            [e for e in audit_log if e.get("status") in ("Approved", "Approved (Merged)", "Registered", "Rejected")],
             key=lambda x: x.get("decision_date", ""),
         )
 
@@ -169,7 +189,7 @@ class WorkflowManager:
             entry_phys = (entry.get("physical_term") or entry.get("term_name") or "").strip().lower()
             entry_biz = (entry.get("term_name") or "").strip().lower()
             entry_status = entry.get("status", "")
-            is_approved = entry_status in ("Approved", "Approved (Merged)")
+            is_approved = entry_status in ("Approved", "Approved (Merged)", "Registered")
 
             # SCD Type 2: deactivate any active record in this bucket that shares
             # the same Physical Term OR same Business Term (only when new entry is approved)

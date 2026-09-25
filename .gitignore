@@ -10,7 +10,6 @@ Thumbs.db
 # Streamlit
 .streamlit/
 !.streamlit/config.toml
-!.streamlit/secrets.toml
 
 # Environments
 .venv/
@@ -23,3 +22,6 @@ secrets.toml
 
 # SQLite DB at root (duplicate)
 glossary_hub.db
+
+# Scratch directory
+scratch/

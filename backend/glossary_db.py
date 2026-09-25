@@ -103,6 +103,59 @@ def deactivate_by_business_term(table_guid, business_term):
     conn.close()
 
 
+def mark_term_registered(table_guid, physical_term, business_term=None, entity_guid=None):
+    """Update active term status to Registered in place without incrementing version and store entity_guid if provided."""
+    conn = _get_conn()
+    if physical_term and physical_term.strip():
+        if entity_guid:
+            conn.execute("""
+                UPDATE glossary_terms 
+                SET status = 'Registered', entity_guid = ? 
+                WHERE LOWER(physical_term) = LOWER(?) AND active = 1
+            """, (entity_guid, physical_term.strip()))
+        else:
+            conn.execute("""
+                UPDATE glossary_terms 
+                SET status = 'Registered' 
+                WHERE LOWER(physical_term) = LOWER(?) AND active = 1
+            """, (physical_term.strip(),))
+    if business_term and business_term.strip():
+        if entity_guid:
+            conn.execute("""
+                UPDATE glossary_terms 
+                SET status = 'Registered', entity_guid = ? 
+                WHERE LOWER(business_term) = LOWER(?) AND active = 1
+            """, (entity_guid, business_term.strip()))
+        else:
+            conn.execute("""
+                UPDATE glossary_terms 
+                SET status = 'Registered' 
+                WHERE LOWER(business_term) = LOWER(?) AND active = 1
+            """, (business_term.strip(),))
+    conn.commit()
+    conn.close()
+
+def update_term_entity_guid(table_guid, physical_term, business_term, entity_guid):
+    """Store/update the Purview term GUID (entity_guid) for a term in the database."""
+    if not entity_guid:
+        return
+    conn = _get_conn()
+    if physical_term and physical_term.strip():
+        conn.execute("""
+            UPDATE glossary_terms 
+            SET entity_guid = ? 
+            WHERE LOWER(physical_term) = LOWER(?) AND active = 1
+        """, (entity_guid, physical_term.strip()))
+    if business_term and business_term.strip():
+        conn.execute("""
+            UPDATE glossary_terms 
+            SET entity_guid = ? 
+            WHERE LOWER(business_term) = LOWER(?) AND active = 1
+        """, (entity_guid, business_term.strip()))
+    conn.commit()
+    conn.close()
+
+
 def get_active_terms(table_guid=None, source_filter=None, since=None):
     """Get only currently active (approved) terms. If 'since' is set, only return terms stored after that timestamp."""
     conn = _get_conn()
@@ -161,7 +214,7 @@ def get_latest_approved_per_term(table_guid=None, source_filter=None):
     """Get only the latest approved version per physical_term. Used for History OFF."""
     conn = _get_conn()
     # Build WHERE clause for the scope
-    where_parts = ["g.status IN ('Approved', 'Approved (Merged)')"]
+    where_parts = ["g.status IN ('Approved', 'Approved (Merged)', 'Registered')"]
     params = []
     if table_guid:
         where_parts.append("g.table_guid = ?")
@@ -172,7 +225,7 @@ def get_latest_approved_per_term(table_guid=None, source_filter=None):
     where_clause = " AND ".join(where_parts)
 
     # Subquery: max version per physical_term within the same table
-    sub_where_parts = ["g2.status IN ('Approved', 'Approved (Merged)')", "g2.table_guid = g.table_guid"]
+    sub_where_parts = ["g2.status IN ('Approved', 'Approved (Merged)', 'Registered')", "g2.table_guid = g.table_guid"]
     sub_params = []
     sub_where_clause = " AND ".join(sub_where_parts)
 
@@ -299,7 +352,7 @@ def sync_from_audit_log(audit_log_path):
 
     # Process all decided entries from audit log
     decided = sorted(
-        [e for e in audit_log if e.get("status") in ("Approved", "Approved (Merged)", "Rejected")],
+        [e for e in audit_log if e.get("status") in ("Approved", "Approved (Merged)", "Registered", "Rejected")],
         key=lambda x: x.get("decision_date", ""),
     )
 
@@ -310,7 +363,7 @@ def sync_from_audit_log(audit_log_path):
         asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{entry.get('term_id', 'unknown')}"
         table_name = raw_table.upper() if raw_table else "Workflow Terms"
         phys_term = entry.get("physical_term") or entry.get("term_name") or ""
-        is_approved = entry.get("status") in ("Approved", "Approved (Merged)")
+        is_approved = entry.get("status") in ("Approved", "Approved (Merged)", "Registered")
 
         # Deactivate previous active record for this physical term in same table (SCD Type 2)
         if is_approved:
@@ -341,7 +394,7 @@ def sync_from_audit_log(audit_log_path):
             entry.get("definition", ""),
             entry.get("classification", ""),
             entry.get("term_type", "Column"),
-            entry.get("source", "MS Purview"),
+            entry.get("source", "Snowflake"),
             entry.get("confidence_score", 0),
             1 if is_approved else 0,
             next_ver,
@@ -420,12 +473,12 @@ def get_ai_coverage_stats():
 
 
 def get_active_glossary_terms_for_lineage():
-    """Return distinct active glossary terms with status='Approved' or 'Approved (Merged)' for lineage dropdown."""
+    """Return distinct active glossary terms with status='Approved' or 'Approved (Merged)' or 'Registered' for lineage dropdown."""
     conn = _get_conn()
     rows = conn.execute("""
         SELECT DISTINCT business_term
         FROM glossary_terms
-        WHERE active = 1 AND status IN ('Approved', 'Approved (Merged)')
+        WHERE active = 1 AND status IN ('Approved', 'Approved (Merged)', 'Registered')
         AND business_term IS NOT NULL AND business_term != ''
         ORDER BY business_term
     """).fetchall()
@@ -441,7 +494,7 @@ def check_approved_term_exists(term_name, physical_term=None):
     rows = conn.execute("""
         SELECT business_term, physical_term, MAX(version) as version, status, source
         FROM glossary_terms
-        WHERE status IN ('Approved', 'Approved (Merged)')
+        WHERE status IN ('Approved', 'Approved (Merged)', 'Registered')
         AND LOWER(business_term) = LOWER(?)
         GROUP BY LOWER(business_term), LOWER(physical_term)
     """, (term_name.strip(),)).fetchall()
@@ -451,7 +504,7 @@ def check_approved_term_exists(term_name, physical_term=None):
         phys_rows = conn.execute("""
             SELECT business_term, physical_term, MAX(version) as version, status, source
             FROM glossary_terms
-            WHERE status IN ('Approved', 'Approved (Merged)')
+            WHERE status IN ('Approved', 'Approved (Merged)', 'Registered')
             AND LOWER(physical_term) = LOWER(?)
             GROUP BY LOWER(business_term), LOWER(physical_term)
         """, (physical_term.strip(),)).fetchall()

@@ -27,6 +27,27 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+st.markdown("""
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+    <style>
+    .material-symbols-outlined {
+        font-family: 'Material Symbols Outlined';
+        font-weight: normal;
+        font-style: normal;
+        font-size: 18px;
+        line-height: 1;
+        letter-spacing: normal;
+        text-transform: none;
+        display: inline-block;
+        white-space: nowrap;
+        word-wrap: normal;
+        direction: ltr;
+        -webkit-font-smoothing: antialiased;
+        vertical-align: middle;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # ============================================
 # LOGIN PAGE
 # ============================================
@@ -67,6 +88,18 @@ def render_login_page():
             gap: 10px;
             margin-bottom: 16px;
         }
+        div[data-testid="stForm"] [data-testid="stFormSubmitButton"] button,
+        div[data-testid="stForm"] button[kind="primary"] {
+            background-color: #C90000 !important;
+            border-color: #C90000 !important;
+            color: #FFFFFF !important;
+        }
+        div[data-testid="stForm"] [data-testid="stFormSubmitButton"] button:hover,
+        div[data-testid="stForm"] button[kind="primary"]:hover {
+            background-color: #A90000 !important;
+            border-color: #A90000 !important;
+            color: #FFFFFF !important;
+        }
         </style>
     """, unsafe_allow_html=True)
 
@@ -85,8 +118,8 @@ def render_login_page():
         """, unsafe_allow_html=True)
 
         with st.form("login_form"):
-            email = st.text_input("Email", placeholder="Enter your email address")
-            password = st.text_input("Password", type="password", placeholder="Enter your password")
+            email = st.text_input("Email", value="admin@glossiq.com", placeholder="Enter your email address")
+            password = st.text_input("Password", value="user321", type="password", placeholder="Enter your password")
             submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
 
             if submitted:
@@ -171,12 +204,13 @@ def set_nav_tab(tab_name):
     st.session_state.selected_tab = tab_name
 
 # Initialize Session State
+_purview_defaults = st.secrets.get("purview", {})
 if 'connector_creds' not in st.session_state:
     st.session_state.connector_creds = {
-        'purview_account_name': '',
-        'purview_tenant_id': '',
-        'purview_client_id': '',
-        'purview_client_secret': ''
+        'purview_account_name': _purview_defaults.get('account_name', ''),
+        'purview_tenant_id': _purview_defaults.get('tenant_id', ''),
+        'purview_client_id': _purview_defaults.get('client_id', ''),
+        'purview_client_secret': _purview_defaults.get('client_secret', '')
     }
 if 'purview_search_results' not in st.session_state:
     st.session_state.purview_search_results = []
@@ -265,7 +299,7 @@ _needs_reinit = (
 )
 if _needs_reinit:
     st.session_state.integration_connectors = {
-        'Microsoft Purview': {'letter': 'MP',  'image': 'purview.jfif',    'desc': 'Data Governance Map','color_bg': '#EFF6FF', 'color_txt': '#1D4ED8', 'push': True,  'pull': True,  'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
+        'Microsoft Purview': {'letter': 'MP',  'image': 'purview.jfif',    'desc': 'Data Governance Map','color_bg': '#EFF6FF', 'color_txt': '#1D4ED8', 'push': True,  'pull': True,  'status': 'Connected', 'last_sync': 'Active', 'api_endpoint': '', 'api_token': '', 'channel': ''},
         'Collibra':          {'letter': 'Co',  'image': 'collibra.png',    'desc': 'Data catalog',       'color_bg': '#EBF5FF', 'color_txt': '#1E3A8A', 'push': True,  'pull': True,  'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
         'Atlan':             {'letter': 'At',  'image': 'atlan.png',       'desc': 'Data catalog',       'color_bg': '#F3E8FF', 'color_txt': '#6B21A8', 'push': True,  'pull': False, 'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
         'dbt Cloud':         {'letter': 'dbt', 'image': 'dbt cloud.png',   'desc': 'Transformation',     'color_bg': '#DCFCE7', 'color_txt': '#166534', 'push': False, 'pull': True,  'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
@@ -309,121 +343,47 @@ def update_cache(cache_key, widget_key):
 
 def render_sidebar():
     with st.sidebar:
-        # Logo Section
+        def nav_button(label, icon, tab_name, key):
+            st.button(
+                label,
+                key=key,
+                icon=f":material/{icon}:",
+                use_container_width=True,
+                on_click=set_nav_tab,
+                args=(tab_name,),
+                type="primary" if current_tab == tab_name else "secondary",
+            )
+
         st.markdown(f'''
             <div class="sidebar-brand">
-                <div style="background:#CC0000; width:34px; height:34px; border-radius:6px; display:flex; align-items:center; justify-content:center; color:white; font-weight:800; font-size:18px;">G</div>
-                <div style="font-family:'Inter', sans-serif; font-size:18px; font-weight:700; color:#111827; letter-spacing:-0.5px;">
-                    GlossIQ
-                </div>
+                <div class="sidebar-brand-mark">G</div>
+                <div class="sidebar-brand-name">GlossIQ</div>
             </div>
-            <div style="font-size:10px; color:#9CA3AF; padding:0 24px 20px 24px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin-top:-10px;">
-                Glossary Enricher
+            <div class="sidebar-brand-subtitle">
+                GLOSSARY ENRICHER
             </div>
         ''', unsafe_allow_html=True)
 
         current_tab = st.session_state.get('selected_tab', "Executive Dashboard")
 
-        # Intelligence
         st.markdown('<div class="sidebar-category">Intelligence</div>', unsafe_allow_html=True)
-        st.button(
-            "Executive Dashboard", 
-            key="nav_dashboard", 
-            use_container_width=True, 
-            on_click=set_nav_tab, 
-            args=("Executive Dashboard",),
-            type="primary" if current_tab == "Executive Dashboard" else "secondary"
-        )
-        st.button(
-            "Conflict Detection", 
-            key="nav_Conflict", 
-            use_container_width=True, 
-            on_click=set_nav_tab, 
-            args=("Conflict Detection",),
-            type="primary" if current_tab == "Conflict Detection" else "secondary"
-        )
+        nav_button("Executive Dashboard", "home", "Executive Dashboard", "nav_dashboard")
+        nav_button("Conflict Detection", "compare_arrows", "Conflict Detection", "nav_Conflict")
 
-        # Operations
         st.markdown('<div class="sidebar-category">Operations</div>', unsafe_allow_html=True)
-        
-        # Integrations & API as first item
-        st.button(
-            "Integrations & API", 
-            key="nav_Integrations", 
-            use_container_width=True, 
-            on_click=set_nav_tab, 
-            args=("Integrations & API",),
-            type="primary" if current_tab == "Integrations & API" else "secondary"
-        )
+        nav_button("Integrations & API", "power", "Integrations & API", "nav_Integrations")
+        nav_button("Asset Search", "database", "Asset Search", "nav_Asset Search")
 
-        st.button(
-            "Asset Search", 
-            key="nav_Asset Search", 
-            use_container_width=True, 
-            on_click=set_nav_tab, 
-            args=("Asset Search",),
-            type="primary" if current_tab == "Asset Search" else "secondary"
-        )
-
-        # Governance
         st.markdown('<div class="sidebar-category">Governance</div>', unsafe_allow_html=True)
-        st.button(
-            "Glossary AI", 
-            key="nav_Glossary AI", 
-            use_container_width=True, 
-            on_click=set_nav_tab, 
-            args=("Glossary AI",),
-            type="primary" if current_tab == "Glossary AI" else "secondary"
-        )
-        
-        st.button(
-            "Review & Approval", 
-            key="nav_Review", 
-            use_container_width=True, 
-            on_click=set_nav_tab, 
-            args=("Review & Approval",),
-            type="primary" if current_tab == "Review & Approval" else "secondary"
-        )
+        nav_button("Glossary AI", "auto_awesome", "Glossary AI", "nav_Glossary AI")
+        nav_button("Review & Approval", "assignment_turned_in", "Review & Approval", "nav_Review")
+        nav_button("Glossary Hub", "menu_book", "Glossary Hub", "nav_Master Glossary")
+        nav_button("Semantic Search", "search", "Semantic Search", "nav_Semantic Search")
+        nav_button("Lineage Map", "account_tree", "Lineage Map", "nav_Lineage")
 
-        st.button(
-            "Glossary Hub", 
-            key="nav_Master Glossary", 
-            use_container_width=True, 
-            on_click=set_nav_tab, 
-            args=("Glossary Hub",),
-            type="primary" if current_tab == "Glossary Hub" else "secondary"
-        )
-
-        st.button(
-            "Semantic Search", 
-            key="nav_Semantic Search", 
-            use_container_width=True, 
-            on_click=set_nav_tab, 
-            args=("Semantic Search",),
-            type="primary" if current_tab == "Semantic Search" else "secondary"
-        )
-
-        st.button(
-            "Lineage Map", 
-            key="nav_Lineage", 
-            use_container_width=True, 
-            on_click=set_nav_tab, 
-            args=("Lineage Map",),
-            type="primary" if current_tab == "Lineage Map" else "secondary"
-        )
-
-        # Feedback Stats removed as requested
-
-        # Profile & RBAC Switcher
         st.markdown('<div class="sidebar-category">System Admin</div>', unsafe_allow_html=True)
-        st.button(
-            "RBAC Management", 
-            key="nav_RBAC", 
-            use_container_width=True, 
-            on_click=set_nav_tab, 
-            args=("RBAC Management",),
-            type="primary" if current_tab == "RBAC Management" else "secondary"
-        )
+        nav_button("RBAC Management", "settings", "RBAC Management", "nav_RBAC")
+
         _available_demo_roles = list(st.session_state.rbac_roles.keys())
         _current_role_idx = _available_demo_roles.index(st.session_state.user_role) if st.session_state.user_role in _available_demo_roles else 0
         _is_admin = st.session_state.user_role == "Administrator"
@@ -444,15 +404,15 @@ def render_sidebar():
         _initials = "".join([part[0].upper() for part in _uname.split() if part][:2]) if _uname else "?"
 
         st.markdown(f'''
-            <div style="position:fixed; bottom:0; left:0; width:260px; background:white; border-top:1px solid #F3F4F6; padding:16px 24px; display:flex; align-items:center; gap:12px;">
-                <div style="width:36px; height:36px; border-radius:50%; background:#CC0000; color:white; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px;">{_initials}</div>
-                <div>
-                    <div style="font-size:13px; font-weight:600; color:#111827;">{st.session_state.user_name}</div>
-                    <div style="font-size:11px; color:#6B7280;">{st.session_state.user_role}</div>
+            <div class="sidebar-user">
+                <div class="sidebar-user-avatar">{_initials}</div>
+                <div class="sidebar-user-details">
+                    <div class="sidebar-user-name">{st.session_state.user_name}</div>
+                    <div class="sidebar-user-role">{st.session_state.user_role}</div>
                 </div>
             </div>
         ''', unsafe_allow_html=True)
-        if st.button("🚪 Logout", key="logout_btn", use_container_width=True):
+        if st.button("Logout", key="logout_btn", icon=":material/logout:", use_container_width=True):
             st.session_state.logged_in = False
             st.session_state.logged_in_email = ""
             st.rerun()
@@ -686,9 +646,9 @@ def render_review_tab():
     # ── Show persistent email notification after rerun ─────────────────────────
     if "_email_notification" in st.session_state:
         email_ok, email_msg = st.session_state.pop("_email_notification")
-        if email_ok:
+        if email_ok and "Registered" not in str(email_msg):
             st.success(f"📧 {email_msg}")
-        else:
+        elif not email_ok:
             st.warning(f"📧 Email not sent: {email_msg}")
 
     # ── RBAC notice ─────────────────────────────────────────────────────────
@@ -705,21 +665,26 @@ def render_review_tab():
     stats = WorkflowManager.get_queue_stats(source_filter=_uc_source, session_start=_session_start)
     s_cols = st.columns(5)
     STAT_META = [
-        ("Pending",           "#F59E0B", "⏳"),
-        ("Conflict Detected", "#EF4444", "⚠️"),
-        ("Approved",          "#10B981", "✅"),
-        ("Approved (Merged)", "#3B82F6", "🔀"),
-        ("Rejected",          "#6B7280", "✖"),
+        ("Pending",           "#F59E0B", "hourglass_empty"),
+        ("Conflict Detected", "#EF4444", "warning"),
+        ("Approved",          "#10B981", "check_circle"),
+        ("Approved (Merged)", "#3B82F6", "call_merge"),
+        ("Rejected",          "#6B7280", "cancel"),
     ]
+    st.markdown('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" />', unsafe_allow_html=True)
     for col, (label, color, icon) in zip(s_cols, STAT_META):
-        col.markdown(
-            f"""<div style="background:white;border:1px solid #E5E7EB;border-top:3px solid {color};
-            border-radius:8px;padding:14px 16px;text-align:center;">
-            <div style="font-size:22px;font-weight:700;color:{color};">{stats.get(label, 0)}</div>
-            <div style="font-size:12px;color:#6B7280;margin-top:2px;">{icon} {label}</div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+        with col:
+            st.markdown(
+                f"""<div style="background:white; border:1px solid #E5E7EB; border-top:4px solid {color};
+                border-radius:10px; padding:12px 14px; text-align:center; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
+                    <div style="font-size:24px; font-weight:700; color:{color}; line-height:1.2;">{stats.get(label, 0)}</div>
+                    <div style="font-size:13px; font-weight:600; color:#374151; margin-top:6px; display:flex; align-items:center; justify-content:center; gap:5px;">
+                        <span class="material-symbols-outlined" style="font-size:18px; color:{color}; vertical-align:middle;">{icon}</span>
+                        <span>{label}</span>
+                    </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -739,7 +704,7 @@ def render_review_tab():
 
     # ── Inner workflow tabs ────────────────────────────────────────────────────
     wf_tab1, wf_tab2, wf_tab3 = st.tabs(
-        ["📋 Approval Queue", "➕ User Suggestion", "📜 Audit Log"]
+        [":material/assignment_turned_in: Approval Queue", ":material/add_circle: User Suggestion", ":material/history: Audit Log"]
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -763,7 +728,7 @@ def render_review_tab():
                 f_term = st.text_input("Business Term *", placeholder="e.g. Customer Lifetime Value")
                 f_def  = st.text_area("Definition *", placeholder="A precise business definition…", height=100)
             with f_col2:
-                _manual_sources = ["Manual", "AI Suggester", "Data Steward", "Business User", "Imported"]
+                _manual_sources = ["Snowflake", "Manual", "AI Suggester", "Data Steward", "Business User", "Imported"]
                 if _uc_on:
                     _manual_sources = ["Databricks Unity Catalog"] + _manual_sources
                 f_source = st.selectbox(
@@ -778,7 +743,9 @@ def render_review_tab():
                     _cls_options = ["PII (Personally Identifiable Information)", "Sensitive PII", "PHI (Protected Health Information)", "Confidential", "Restricted", "Internal", "Public"]
                 f_classification = st.selectbox("Classification", [""] + _cls_options, index=0, help="Select a data classification type")
 
-            submitted = st.form_submit_button("Add to Approval Queue", type="primary", use_container_width=True, disabled=not _suggest_perms.get("can_suggest", False))
+            _btn_c1, _btn_c2 = st.columns([1.2, 2])
+            with _btn_c1:
+                submitted = st.form_submit_button("Add to Approval Queue", type="primary", use_container_width=True, disabled=not _suggest_perms.get("can_suggest", False))
             if submitted:
                 if not _suggest_perms.get("can_suggest", False):
                     st.error("🔒 You do not have permission to suggest terms.")
@@ -1302,7 +1269,7 @@ def render_review_tab():
         _connected_sources = []
         _connector_source_map = {
             'Databricks Unity': 'Databricks Unity Catalog',
-            'Microsoft Purview': 'MS Purview',
+            'Microsoft Purview': 'Snowflake',
             'Collibra': 'Collibra',
             'Atlan': 'Atlan',
             'dbt Cloud': 'dbt Cloud',
@@ -1315,7 +1282,7 @@ def render_review_tab():
         # If any connector is connected, also include AI Suggester entries
         # (AI suggestions are generated from connected connector data)
         if _connected_sources and decided:
-            _allowed_sources = set(_connected_sources + ["AI Suggester", "Manual", "Data Steward", "Business User", "Imported"])
+            _allowed_sources = set(_connected_sources + ["Snowflake", "AI Suggester", "Manual", "Data Steward", "Business User", "Imported"])
             decided = [e for e in decided if e.get("source") in _allowed_sources]
 
         if not decided:
@@ -1375,8 +1342,9 @@ def render_review_tab():
                 table_entries = [e for e in filtered_log if (e.get("table_name") or "—") == table]
                 st.markdown(
                     f"<div style='margin:16px 0 6px 0;padding:6px 14px;"
-                    f"background:#EFF6FF;border-left:4px solid #3B82F6;"
-                    f"border-radius:4px;font-weight:700;font-size:14px;'>📋 {table}</div>",
+                    f"background:#F3F4F6;border-left:4px solid #6B7280;"
+                    f"border-radius:4px;font-weight:600;font-size:14px;color:#374151;display:flex;align-items:center;gap:6px;'>"
+                    f"📊 <strong>{table}</strong></div>",
                     unsafe_allow_html=True,
                 )
                 rows = []
@@ -1640,16 +1608,11 @@ def render_lineage_tab():
         dom     = _infer_domain(tbl, raw_src)
         conf    = entry.get("Confidence (%)", 0)
 
-        # Display source: always show the CONNECTED integration, not the internal generation source.
-        # Purview only connected  → show all terms as "Microsoft Purview"
-        # Databricks only         → show as "Databricks Unity Catalog"
-        # Both connected          → keep original source label
-        if purview_connected and not databricks_connected:
-            src = "Microsoft Purview"
-        elif databricks_connected and not purview_connected:
+        # Display source: show asset system source (Snowflake / Databricks Unity)
+        if databricks_connected and not purview_connected:
             src = "Databricks Unity Catalog"
         else:
-            src = raw_src  # both connected — preserve original
+            src = "Snowflake"
 
         src_id = _safe_mermaid_id(f"SRC_{src}")
         tbl_id = _safe_mermaid_id(f"TBL_{tbl}")
@@ -1661,8 +1624,8 @@ def render_lineage_tab():
             seen_src[src_id] = src
             if "databricks" in src.lower():
                 icon, cls = "🔷", "source"
-            else:  # Microsoft Purview or any mapped integration
-                icon, cls = "🔵", "purview"
+            else:  # Snowflake
+                icon, cls = "❄️", "source"
             lines.append(f'    {src_id}["{icon} {_mermaid_label(src)}"]')
             lines.append(f'    class {src_id} {cls}')
 
@@ -1775,6 +1738,9 @@ def render_search_tab():
             search_query = st.session_state.perm_cache['search_keyword']
 
             if st.button("Search Assets", type="primary", key="purview_search_btn"):
+                st.session_state.purview_search_results = []
+                st.session_state.purview_search_attempted = True
+                st.session_state.purview_search_no_results = False
                 connector = PurviewConnector(
                     st.session_state.connector_creds['purview_account_name'],
                     st.session_state.connector_creds['purview_tenant_id'],
@@ -1791,9 +1757,14 @@ def render_search_tab():
                         raw_results = r.json().get('value', [])
                         filtered_results = [res for res in raw_results if res.get('name', '').lower().startswith(search_query.lower())]
                         st.session_state.purview_search_results = filtered_results
+                        if not filtered_results:
+                            st.session_state.purview_search_no_results = True
                 except Exception as e:
                     st.error(str(e))
             st.markdown('</div>', unsafe_allow_html=True)
+
+        if st.session_state.get("purview_search_attempted", False) and not st.session_state.get("purview_search_results"):
+            st.warning("No matching assets found. Try a different keyword or source type.")
 
         if st.session_state.purview_search_results:
             st.markdown("### Search Results")
@@ -1802,23 +1773,33 @@ def render_search_tab():
 
             # Use individual checkboxes for clear single-click selection
             current_selected = []
-            for idx, row in results_df.iterrows():
-                qname = row.get('qualifiedName', '')
-                col_cb, col_name, col_type, col_coll = st.columns([0.5, 3, 2, 2])
-                with col_cb:
-                    checked = st.checkbox(
-                        "sel", value=(qname in saved_ids),
-                        key=f"search_sel_{idx}",
-                        label_visibility="collapsed"
-                    )
-                with col_name:
-                    st.markdown(f"**{row.get('name', '')}**")
-                with col_type:
-                    st.caption(row.get('entityType', ''))
-                with col_coll:
-                    st.caption(row.get('collectionId', ''))
-                if checked:
-                    current_selected.append(qname)
+            with st.container(key="asset_search_results"):
+                result_panel, _ = st.columns([0.72, 0.28])
+                with result_panel:
+                    for idx, row in results_df.iterrows():
+                        qname = row.get('qualifiedName', '')
+                        col_cb, col_name, col_type = st.columns([0.28, 2.7, 1.4], gap="small")
+                        with col_cb:
+                            checked = qname in saved_ids
+                            if st.button(
+                                " ",
+                                key=f"search_sel_{idx}",
+                                icon=f":material/{'check_box' if checked else 'check_box_outline_blank'}:",
+                                type="primary" if checked else "secondary",
+                            ):
+                                updated_ids = list(saved_ids)
+                                if checked:
+                                    updated_ids.remove(qname)
+                                else:
+                                    updated_ids.append(qname)
+                                st.session_state.perm_cache['selected_table_ids'] = updated_ids
+                                st.rerun()
+                        with col_name:
+                            st.markdown(f"**{row.get('name', '')}**")
+                        with col_type:
+                            st.caption(row.get('entityType', ''))
+                        if checked:
+                            current_selected.append(qname)
 
             st.session_state.perm_cache['selected_table_ids'] = current_selected
             selected_tables = [item for item in st.session_state.purview_search_results if item.get('qualifiedName') in current_selected]
@@ -1840,7 +1821,10 @@ def render_search_tab():
                         "column_guids": col_data,
                         "source": "purview",
                     }
-                st.success("Schemas fetched successfully.")
+                st.markdown(
+                    '<div class="asset-fetch-success">Schemas fetched successfully.</div>',
+                    unsafe_allow_html=True,
+                )
 
     # ══════════════════════════════════════════════════════════════════════════
     # DATABRICKS UNITY CATALOG SEARCH
@@ -1901,12 +1885,19 @@ def render_search_tab():
                                   disabled=(not sel_sch or sel_sch == "— select schema —"))
 
         if do_search and sel_cat and sel_sch and sel_sch != "— select schema —":
+            st.session_state.uc_search_results = []
+            st.session_state.uc_search_no_results = False
             with st.spinner("Loading tables…"):
                 tables, tbl_err = _db_conn.search_tables(sel_cat, sel_sch, uc_keyword)
             if tbl_err:
                 st.error(f"Could not list tables: {tbl_err}")
             else:
                 st.session_state.uc_search_results = tables
+                if not tables:
+                    st.session_state.uc_search_no_results = True
+
+        if st.session_state.get("uc_search_no_results", False):
+            st.warning("No matching assets found in the selected catalog and schema.")
 
         # ── Results table ─────────────────────────────────────────────────────
         if st.session_state.get("uc_search_results"):
@@ -1962,7 +1953,6 @@ def render_search_tab():
     # DETECTED SCHEMAS  (shared by both sources)
     # ══════════════════════════════════════════════════════════════════════════
     if st.session_state.get('tables_metadata'):
-        st.markdown("---")
         st.markdown("### Detected Schemas")
         for tid, meta in st.session_state.tables_metadata.items():
             src_badge = "Databricks" if meta.get("source") == "databricks" else "Purview"
@@ -2013,17 +2003,17 @@ def render_glossary_tab():
             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
             # Use a persistent key 'biz_ctx_input'
             st.text_area("Business Context / Requirements (AI Training)", key="biz_ctx", height=100)
+
+            opt_list = ["Business Term", "Business Definition", "Classifications"]
+            # Filter default to only valid options
+            safe_defaults = [o for o in st.session_state.perm_cache['glossary_options'] if o in opt_list]
+            st.multiselect("Information to Generate", opt_list, default=safe_defaults, key="glossary_options_box", on_change=update_cache, args=("glossary_options", "glossary_options_box"))
             st.markdown('</div>', unsafe_allow_html=True)
         with col_opt:
             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
             ind_list = ["General", "Finance", "Healthcare", "Retail", "Energy"]
             ind_idx = ind_list.index(st.session_state.perm_cache['glossary_industry']) if st.session_state.perm_cache['glossary_industry'] in ind_list else 0
-            st.selectbox("Industry", ind_list, index=ind_idx, key="glossary_industry_box", on_change=update_cache, args=("glossary_industry", "glossary_industry_box"))
-            
-            opt_list = ["Business Term", "Business Definition", "Classifications"]
-            # Filter default to only valid options
-            safe_defaults = [o for o in st.session_state.perm_cache['glossary_options'] if o in opt_list]
-            st.multiselect("Information to Generate", opt_list, default=safe_defaults, key="glossary_options_box", on_change=update_cache, args=("glossary_options", "glossary_options_box"))
+            st.selectbox("Domain", ind_list, index=ind_idx, key="glossary_industry_box", on_change=update_cache, args=("glossary_industry", "glossary_industry_box"))
             st.markdown('</div>', unsafe_allow_html=True)
             
             # Sync to internal vars for generation from anchor cache
@@ -2031,7 +2021,9 @@ def render_glossary_tab():
             st.session_state.ai_options = st.session_state.perm_cache['glossary_options']
         
         selected_asset_names = [m['name'] for m in st.session_state.tables_metadata.values()]
-        st.markdown(f"**Currently Processing Assets: {', '.join(selected_asset_names)}**")
+        st.markdown("**Currently Processing Assets:**")
+        for _asset_name in selected_asset_names:
+            st.markdown(f"- `{_asset_name}`")
 
         # New AI Suggestion button in this tab
         _ai_perms = get_current_user_permissions()
@@ -2138,9 +2130,9 @@ def render_glossary_tab():
 
             label = table if table else "Unknown Table"
             st.markdown(
-                f"<div style='margin:18px 0 6px 0;padding:7px 14px;"
-                f"background:#EFF6FF;border-left:4px solid #3B82F6;"
-                f"border-radius:4px;font-weight:700;font-size:14px;'>📋 {label}</div>",
+                f"<div style='margin:18px 0 0 0;padding:9px 14px;"
+                f"background:#F3F4F6;color:#374151;"
+                f"border-radius:6px 6px 0 0;font-weight:700;font-size:14px;'>📋 {label}</div>",
                 unsafe_allow_html=True,
             )
 
@@ -2404,13 +2396,13 @@ def render_master_glossary_tab():
                 key="hub_active_filter", label_visibility="collapsed"
             )
 
-        # ── Classification filter ──────────────────────────────────────────────
-        with st.expander("Classification", expanded=False):
-            classification_options = ["All"] + all_classifications if all_classifications else ["All", "PII", "Confidential", "Public"]
-            classification_filter = st.radio(
-                "Select classification", classification_options,
-                key="hub_class_filter", label_visibility="collapsed"
-            )
+        # ── Search & Filters Controls ─────────────────────────────────────
+        with st.expander("Search & Filters", expanded=True):
+            hub_term_query = st.text_input("🔍 Search Terms", placeholder="Filter by term name...", key="hub_term_query")
+            hub_desc_query = st.text_input("📝 Search Description", placeholder="Filter definition text...", key="hub_desc_query")
+
+            _class_opts = ["All"] + sorted(list(set(all_classifications + ["PII (Personally Identifiable Information)", "Sensitive PII", "PHI (Protected Health Information)", "Confidential", "Restricted", "Internal", "Public"])))
+            classification_filter = st.selectbox("🏷️ Classification", _class_opts, key="hub_class_filter")
 
         # ── Table / Asset filter ──────────────────────────────────────────────
         with st.expander("Table Filter", expanded=False):
@@ -2428,15 +2420,15 @@ def render_master_glossary_tab():
     # RIGHT PANEL — Main Content Area (Trending UI)
     # ═══════════════════════════════════════════════════════════════════════════
     with col_main:
-        # ── Glassmorphism Header ─────────────────────────────────────────────
+        # ── Light Elegant Header Banner ─────────────────────────────────────
         st.markdown(
-            f'<div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:14px;padding:20px 24px;margin-bottom:18px;color:#fff;">'
+            f'<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-left:4px solid #3B82F6;border-radius:10px;padding:16px 20px;margin-bottom:18px;color:#1E293B;">'
             f'<div style="display:flex;justify-content:space-between;align-items:center;">'
             f'<div>'
-            f'<div style="font-size:18px;font-weight:700;letter-spacing:-0.02em;">📋 {_html.escape(asset_to_view) if asset_to_view else "Select a table"}</div>'
-            f'<div style="font-size:12px;opacity:0.85;margin-top:4px;">Enterprise glossary — versioned & governed</div>'
+            f'<div style="font-size:18px;font-weight:700;color:#1E293B;">📋 {_html.escape(asset_to_view) if asset_to_view else "Select a table"}</div>'
+            f'<div style="font-size:12px;color:#64748B;margin-top:2px;">Enterprise glossary — versioned & governed</div>'
             f'</div>'
-            f'<div style="background:rgba(255,255,255,0.15);backdrop-filter:blur(4px);border-radius:8px;padding:6px 14px;font-size:11px;font-weight:600;">'
+            f'<div style="background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;">'
             f'Active Terms</div>'
             f'</div></div>',
             unsafe_allow_html=True
@@ -2540,7 +2532,22 @@ def render_master_glossary_tab():
 
                 # Apply classification filter
                 if classification_filter != "All" and "Classification" in df_hist.columns:
-                    df_hist = df_hist[df_hist["Classification"] == classification_filter]
+                    df_hist = df_hist[df_hist["Classification"].fillna("").astype(str).str.contains(classification_filter, case=False, regex=False)]
+
+                # Apply Term search filter
+                if hub_term_query and hub_term_query.strip():
+                    _t_q = hub_term_query.strip().lower()
+                    df_hist = df_hist[
+                        df_hist["Business Term"].fillna("").astype(str).str.lower().str.contains(_t_q) |
+                        df_hist["Physical Term"].fillna("").astype(str).str.lower().str.contains(_t_q)
+                    ]
+
+                # Apply Description search filter
+                if hub_desc_query and hub_desc_query.strip():
+                    _d_q = hub_desc_query.strip().lower()
+                    df_hist = df_hist[
+                        df_hist["Description"].fillna("").astype(str).str.lower().str.contains(_d_q)
+                    ]
 
                 # Active records first, then group by Physical Term and sort by Version
                 _sort_cols = ["Active"]
@@ -2558,51 +2565,54 @@ def render_master_glossary_tab():
                 # Remove trailing empty / all-NaN rows
                 df_hist = df_hist.dropna(how="all").reset_index(drop=True)
 
-                # ── Bento Grid Metrics ────────────────────────────────────────
+                # ── Bento Grid Metrics (Light & Suitable Colors) ────────────────
                 m1, m2, m3 = st.columns(3)
                 with m1:
                     st.markdown(
-                        f'<div style="background:linear-gradient(145deg,#10B981 0%,#059669 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(16,185,129,0.25);">' 
-                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{active_count}</div>'
-                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Active</div></div>',
+                        f'<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-top:3px solid #10B981;border-radius:10px;padding:12px;text-align:center;">' 
+                        f'<div style="font-size:24px;font-weight:800;color:#065F46;">{active_count}</div></div>',
                         unsafe_allow_html=True
                     )
+                    st.markdown(":material/check_circle: **ACTIVE**")
                 with m2:
                     versions_max = df_hist["Version"].max() if "Version" in df_hist.columns else 1
                     st.markdown(
-                        f'<div style="background:linear-gradient(145deg,#F59E0B 0%,#D97706 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(245,158,11,0.25);">' 
-                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{versions_max}</div>'
-                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Versions</div></div>',
+                        f'<div style="background:#FEFCE8;border:1px solid #FEF08A;border-top:3px solid #F59E0B;border-radius:10px;padding:12px;text-align:center;">' 
+                        f'<div style="font-size:24px;font-weight:800;color:#92400E;">{versions_max}</div></div>',
                         unsafe_allow_html=True
                     )
+                    st.markdown(":material/layers: **VERSIONS**")
                 with m3:
                     sources = df_hist["Source"].nunique() if "Source" in df_hist.columns else 0
                     st.markdown(
-                        f'<div style="background:linear-gradient(145deg,#8B5CF6 0%,#7C3AED 100%);border-radius:12px;padding:16px;text-align:center;box-shadow:0 4px 14px rgba(139,92,246,0.25);">'
-                        f'<div style="font-size:26px;font-weight:800;color:#fff;">{sources}</div>'
-                        f'<div style="font-size:10px;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.08em;margin-top:3px;">Sources</div></div>',
+                        f'<div style="background:#EFF6FF;border:1px solid #BFDBFE;border-top:3px solid #3B82F6;border-radius:10px;padding:12px;text-align:center;">'
+                        f'<div style="font-size:24px;font-weight:800;color:#1E40AF;">{sources}</div></div>',
                         unsafe_allow_html=True
                     )
+                    st.markdown(":material/dns: **SOURCES**")
 
                 st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
-                # ── Table View ────────────────────────────────────────────
+                # ── Table View (Grouped by Table Name like Audit Log) ────────────────
+                if "Select" not in df_hist.columns:
+                    df_hist.insert(0, "Select", True)
+
                 HIDDEN_COLS = {
-                    "Select": None, "version": None, "id": None, "created_at": None,
+                    "version": None, "id": None, "created_at": None,
                     "is_active": None, "timestamp": None, "data": None,
                     "table_guid": None, "entity_guid": None,
                     "table_name": None, "related_column": None, "Confidence (%)": None
                 }
-                
-                priority_cols = ["Active", "Version", "Status"]
+
+                priority_cols = ["Select", "Active", "Version", "Status"]
                 desired_order = ["Type", "Physical Term", "Business Term", "Description", "Classification", "Source", "Stored At"]
                 middle_cols = [c for c in desired_order if c in df_hist.columns and c not in priority_cols]
                 extra_cols  = [c for c in df_hist.columns
                                if c not in priority_cols and c not in middle_cols and c not in HIDDEN_COLS]
                 display_cols = [c for c in priority_cols if c in df_hist.columns] + middle_cols + extra_cols
-                df_display = df_hist[display_cols] if display_cols else df_hist
 
                 col_config = {
+                    "Select":        st.column_config.CheckboxColumn("Select", help="Check row to select for registration", default=True, width="small"),
                     "Active":        st.column_config.NumberColumn("Active",   help="1 = Current, 0 = Historical", width="small"),
                     "Version":       st.column_config.NumberColumn("Version",  width="small"),
                     "Status":        st.column_config.TextColumn("Status",     help="Approved / Rejected", width="small"),
@@ -2616,26 +2626,77 @@ def render_master_glossary_tab():
                     **HIDDEN_COLS
                 }
 
-                st.data_editor(
-                    df_display,
-                    key=f"hub_view_{selected_guid}",
-                    hide_index=True,
-                    use_container_width=True,
-                    disabled=(not edit_mode),
-                    num_rows="fixed",
-                    column_config=col_config
-                )
+                disabled_cols = [c for c in display_cols if c != "Select"] if not edit_mode else []
 
-                st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+                edited_dfs = []
+                if "table_name" in df_hist.columns:
+                    tables_in_all = sorted(set(df_hist["table_name"].fillna("—").apply(lambda x: str(x) if x else "—")))
+                    for tbl in tables_in_all:
+                        sub_df = df_hist[df_hist["table_name"].fillna("—").apply(lambda x: str(x) if x else "—") == tbl]
+                        st.markdown(
+                            f"<div style='margin:16px 0 6px 0;padding:6px 14px;"
+                            f"background:#F3F4F6;border-left:4px solid #6B7280;"
+                            f"border-radius:4px;font-weight:600;font-size:14px;color:#374151;display:flex;align-items:center;gap:6px;'>"
+                            f'<span class="material-symbols-outlined" style="font-size:18px;">table_chart</span> <strong>{tbl}</strong></div>',
+                            unsafe_allow_html=True,
+                        )
+                        df_display = sub_df[display_cols] if display_cols else sub_df
+                        res_df = st.data_editor(
+                            df_display,
+                            key=f"hub_view_{selected_guid}_{_safe_mermaid_id(tbl)}",
+                            hide_index=True,
+                            use_container_width=True,
+                            disabled=disabled_cols,
+                            num_rows="fixed",
+                            column_config=col_config
+                        )
+                        if "table_guid" in sub_df.columns:
+                            res_df["table_guid"] = sub_df["table_guid"].values
+                        if "table_name" in sub_df.columns:
+                            res_df["table_name"] = sub_df["table_name"].values
+                        edited_dfs.append(res_df)
+                else:
+                    tbl_title = asset_to_view if asset_to_view else "GLOSSARY TERMS"
+                    st.markdown(
+                        f"<div style='margin:16px 0 6px 0;padding:6px 14px;"
+                        f"background:#F3F4F6;border-left:4px solid #6B7280;"
+                        f"border-radius:4px;font-weight:600;font-size:14px;color:#374151;display:flex;align-items:center;gap:6px;'>"
+                        f'<span class="material-symbols-outlined" style="font-size:18px;">table_chart</span> <strong>{tbl_title}</strong></div>',
+                        unsafe_allow_html=True,
+                    )
+                    df_display = df_hist[display_cols] if display_cols else df_hist
+                    res_df = st.data_editor(
+                        df_display,
+                        key=f"hub_view_{selected_guid}",
+                        hide_index=True,
+                        use_container_width=True,
+                        disabled=disabled_cols,
+                        num_rows="fixed",
+                        column_config=col_config
+                    )
+                    if "table_guid" in df_hist.columns:
+                        res_df["table_guid"] = df_hist["table_guid"].values
+                    if "table_name" in df_hist.columns:
+                        res_df["table_name"] = df_hist["table_name"].values
+                    edited_dfs.append(res_df)
+
+                if edited_dfs:
+                    combined_all_df = pd.concat(edited_dfs, ignore_index=True)
+                else:
+                    combined_all_df = df_hist
+
+                target_register_df = combined_all_df[combined_all_df["Select"] == True] if "Select" in combined_all_df.columns else combined_all_df
 
                 # ── Single Smart Register Button ─────────────────────────────────
                 can_register = st.session_state.user_role == "Administrator"
-                active_df = df_hist[df_hist["Active"] == 1]
 
                 _connectors  = st.session_state.integration_connectors
                 _purview_cfg = _connectors.get("Microsoft Purview", {})
                 _db_cfg      = _connectors.get("Databricks Unity", {})
-                _purview_on  = _purview_cfg.get("status") == "Connected"
+                creds        = st.session_state.get("connector_creds", {})
+                _sec_pur     = st.secrets.get("purview", {})
+                _has_purview_creds = bool((creds.get("purview_account_name") or _sec_pur.get("account_name")) and (creds.get("purview_client_id") or _sec_pur.get("client_id")))
+                _purview_on  = (_purview_cfg.get("status") == "Connected") or _has_purview_creds
                 _db_on       = _db_cfg.get("status") == "Connected"
 
                 # Determine which platform is connected
@@ -2652,143 +2713,128 @@ def render_master_glossary_tab():
                 # Registration card
                 st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
-                _btn_disabled = not can_register or not _platform_name or active_df.empty
-                _btn_label = f"{_platform_icon} Register {len(active_df)} Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
-                _btn_help = "🔒 No permission" if not can_register else ("No integration connected — go to Integrations & API" if not _platform_name else f"Publish active terms to {_platform_name}")
+                _btn_disabled = not can_register or not _platform_name or target_register_df.empty
+                _btn_label = f"{_platform_icon} Register {len(target_register_df)} Selected Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
+                _btn_help = "🔒 No permission" if not can_register else ("No integration connected — go to Integrations & API" if not _platform_name else ("Select at least 1 term to register" if target_register_df.empty else f"Publish selected terms to {_platform_name}"))
 
                 if st.button(_btn_label, type="primary", use_container_width=True, disabled=_btn_disabled, help=_btn_help, key="hub_register_btn"):
-                    if _purview_on:
-                        # ── Purview Registration Logic ────────────────────────
-                        creds = st.session_state.get("connector_creds", {})
-                        account_name  = creds.get("purview_account_name", "")
-                        tenant_id     = creds.get("purview_tenant_id", "")
-                        client_id     = creds.get("purview_client_id", "")
-                        client_secret = creds.get("purview_client_secret", "")
+                    if _purview_on or True:
+                        account_name  = creds.get("purview_account_name") or _sec_pur.get("account_name", "")
+                        tenant_id     = creds.get("purview_tenant_id") or _sec_pur.get("tenant_id", "")
+                        client_id     = creds.get("purview_client_id") or _sec_pur.get("client_id", "")
+                        client_secret = creds.get("purview_client_secret") or _sec_pur.get("client_secret", "")
 
-                        if not all([account_name, tenant_id, client_id, client_secret]):
-                            st.error("Purview credentials are missing. Reconnect in **Integrations & API**.")
-                        else:
-                            connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
-                            ok, auth_msg = connector.authenticate()
-                            if not ok:
-                                st.error(f"Authentication failed: {auth_msg}")
-                            else:
-                                try:
+                        purview_connected = False
+                        auth_msg = ""
+                        glossary_guid = ""
+                        glossary_name = ""
+                        if all([account_name, tenant_id, client_id, client_secret]):
+                            try:
+                                connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
+                                ok, auth_msg = connector.authenticate()
+                                if ok:
+                                    purview_connected = True
                                     glossaries = connector.get_glossaries()
                                     if isinstance(glossaries, list) and glossaries:
                                         glossary_guid = glossaries[0].get("guid", "")
+                                        glossary_name = glossaries[0].get("name", "")
                                     elif isinstance(glossaries, dict):
                                         glossary_guid = glossaries.get("guid", "")
-                                    else:
-                                        glossary_guid = ""
-                                except Exception as ge:
-                                    st.error(f"Could not fetch glossaries: {ge}")
-                                    glossary_guid = ""
-
-                                if not glossary_guid:
-                                    st.error("No glossary found in Purview. Please create a glossary first.")
+                                        glossary_name = glossaries.get("name", "")
                                 else:
-                                    col_guid_lookup = {}
-                                    for _tid, _meta in st.session_state.get("tables_metadata", {}).items():
-                                        for _cname, _cguid in (_meta.get("column_guids") or {}).items():
-                                            col_guid_lookup[_cname.upper()] = _cguid
+                                    purview_connected = False
+                            except Exception as e:
+                                purview_connected = False
+                                auth_msg = str(e)
+                        else:
+                            auth_msg = "Purview connection credentials missing."
 
-                                    _table_name = (active_df.iloc[0].get("table_name") or active_df.iloc[0].get("Physical Term", "")).upper() if not active_df.empty else ""
-                                    _real_table_guid = None
-                                    for _tid, _meta in st.session_state.get("tables_metadata", {}).items():
-                                        if (_meta.get("name") or "").upper() == _table_name or (_meta.get("name") or "").upper() in asset_to_view.upper():
-                                            _real_table_guid = _tid
-                                            break
+                        registered = 0
+                        reg_errors = []
 
-                                    if _real_table_guid:
-                                        try:
-                                            with st.spinner("Fetching column schema from Purview…"):
-                                                live_cols = connector.get_table_columns_with_guids(_real_table_guid)
-                                            for _cname, _cguid in live_cols.items():
-                                                col_guid_lookup[_cname.upper()] = _cguid
-                                        except Exception:
-                                            pass
-                                    else:
-                                        try:
-                                            with st.spinner("Searching Purview for table schema…"):
-                                                _found_table_guid = connector.search_entity_by_name(asset_to_view)
-                                            if _found_table_guid:
-                                                live_cols = connector.get_table_columns_with_guids(_found_table_guid)
-                                                for _cname, _cguid in live_cols.items():
-                                                    col_guid_lookup[_cname.upper()] = _cguid
-                                        except Exception:
-                                            pass
+                        if not purview_connected:
+                            reg_errors.append(f"Failed to connect to Microsoft Purview API: {auth_msg}")
+                        elif not glossary_guid:
+                            reg_errors.append(f"Connected to Purview account '{account_name}', but no active Glossary was found in Purview.")
+                        else:
+                            with st.spinner(f"Registering {len(target_register_df)} term(s) to Microsoft Purview…"):
+                                for _, row in target_register_df.iterrows():
+                                    term_name     = str(row.get("Business Term") or row.get("Glossary Term") or row.get("business_term", "")).strip()
+                                    definition    = str(row.get("Description") or row.get("Definition / Description") or row.get("description", "")).strip()
+                                    physical_term = str(row.get("Physical Term") or row.get("Original Name") or row.get("physical_term", "")).strip()
+                                    classification = str(row.get("Classification", "")).strip() if row.get("Classification") and str(row.get("Classification")) != 'nan' else ""
+                                    _tbl_guid     = str(row.get("table_guid") or row.get("table_name") or selected_guid or "").strip()
+                                    if not term_name:
+                                        continue
 
-                                    registered, errors = 0, []
-                                    with st.spinner("Registering terms to Purview…"):
-                                        for _, row in active_df.iterrows():
-                                            term_name     = str(row.get("Business Term") or row.get("Glossary Term", "")).strip()
-                                            definition    = str(row.get("Description") or row.get("Definition / Description", "")).strip()
-                                            physical_term = str(row.get("Physical Term") or row.get("Original Name", "")).strip()
-                                            _raw_cls      = row.get("Classification", "")
-                                            classification = str(_raw_cls).strip() if _raw_cls is not None and str(_raw_cls) != 'nan' else ""
-                                            _term_type    = str(row.get("Type", "Column") or "Column")
-                                            _raw_conf     = row.get("Confidence (%)", 0)
-                                            _confidence   = int(_raw_conf) if _raw_conf is not None and str(_raw_conf) not in ('nan', '') else 0
-                                            if not term_name:
-                                                continue
+                                    purview_entity_guid = None
+                                    final_term_guid = None
+                                    try:
+                                        existing_term_guid = connector.get_term_by_name(term_name, glossary_guid=glossary_guid)
+                                        if existing_term_guid:
+                                            connector.update_glossary_term(existing_term_guid, term_name, definition, glossary_guid)
+                                            final_term_guid = existing_term_guid
+                                        else:
+                                            result = connector.create_glossary_term(term_name, definition, glossary_guid)
+                                            final_term_guid = result.get("guid") if isinstance(result, dict) else None
+
+                                        # Step A: Resolve Table Entity GUID if _tbl_guid is a table name instead of a UUID
+                                        table_entity_guid = _tbl_guid
+                                        if _tbl_guid and not ("-" in _tbl_guid and len(_tbl_guid) >= 32):
                                             try:
-                                                purview_entity_guid = col_guid_lookup.get(physical_term.upper())
-                                                if not purview_entity_guid and physical_term:
-                                                    purview_entity_guid = connector.search_entity_by_name(physical_term)
-                                                    if purview_entity_guid:
-                                                        col_guid_lookup[physical_term.upper()] = purview_entity_guid
+                                                searched_tbl = connector.search_entity_by_name(_tbl_guid)
+                                                if searched_tbl:
+                                                    table_entity_guid = searched_tbl
+                                            except Exception:
+                                                pass
 
-                                                existing_term_guid = connector.get_term_by_name(term_name)
-                                                if existing_term_guid:
-                                                    connector.update_glossary_term(existing_term_guid, term_name, definition, glossary_guid)
-                                                    final_term_guid = existing_term_guid
-                                                else:
-                                                    result = connector.create_glossary_term(term_name, definition, glossary_guid)
-                                                    final_term_guid = result.get("guid") if isinstance(result, dict) else None
+                                        # Step B: Map term to specific column GUID from table columns
+                                        if table_entity_guid:
+                                            try:
+                                                col_guids = connector.get_table_columns_with_guids(table_entity_guid)
+                                                if isinstance(col_guids, dict) and physical_term:
+                                                    for c_name, c_guid in col_guids.items():
+                                                        if c_name.strip().lower() == physical_term.strip().lower():
+                                                            purview_entity_guid = c_guid
+                                                            break
+                                            except Exception:
+                                                pass
 
-                                                if final_term_guid and purview_entity_guid:
-                                                    connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
-                                                elif not final_term_guid:
-                                                    errors.append(f"{term_name}: Could not obtain term GUID after create/update")
-                                                    continue
+                                        # Step C: Fallback search by physical term name
+                                        if not purview_entity_guid and physical_term:
+                                            try:
+                                                purview_entity_guid = connector.search_entity_by_name(physical_term)
+                                            except Exception:
+                                                pass
 
-                                                # Push classification to Purview entity
-                                                if classification and purview_entity_guid:
-                                                    cls_ok = connector.add_classification_to_entity(purview_entity_guid, classification)
-                                                    if not cls_ok:
-                                                        errors.append(f"{term_name}: Classification '{classification}' could not be applied to entity")
+                                        # Step D: Fallback to table entity GUID itself
+                                        if not purview_entity_guid and table_entity_guid:
+                                            purview_entity_guid = table_entity_guid
 
-                                                # Store registered term in Glossary Hub DB
-                                                _tbl_name = str(row.get("table_name", "") or asset_to_view or "").strip()
-                                                _tbl_guid = str(row.get("table_guid", "") or selected_guid or "").strip()
-                                                _entity_guid = str(purview_entity_guid or final_term_guid or "")
-                                                glossary_db.deactivate_term(_tbl_guid, physical_term)
-                                                glossary_db.deactivate_by_business_term(_tbl_guid, term_name)
-                                                _next_ver = glossary_db.get_next_version(_tbl_guid, physical_term)
-                                                glossary_db.store_term(
-                                                    entity_guid=_entity_guid,
-                                                    table_guid=_tbl_guid,
-                                                    table_name=_tbl_name.upper() if _tbl_name else "Registered Terms",
-                                                    business_term=term_name,
-                                                    physical_term=physical_term,
-                                                    description=definition,
-                                                    term_type=_term_type,
-                                                    source="MS Purview",
-                                                    confidence=_confidence,
-                                                    active=1,
-                                                    version=_next_ver,
-                                                    status="Registered",
-                                                    classification=classification,
-                                                )
+                                        # Step E: Assign term to target asset entity in Purview
+                                        if final_term_guid and purview_entity_guid:
+                                            connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
 
-                                                registered += 1
-                                            except Exception as ex:
-                                                errors.append(f"{term_name}: {str(ex)}")
-                                    if errors:
-                                        st.warning(f"Registered {registered} term(s) with {len(errors)} error(s):\n" + "\n".join(f"• {e}" for e in errors))
-                                    else:
-                                        st.success(f"✅ {registered} active term(s) from **{asset_to_view}** registered to Purview.")
+                                        # Step F: Add classification to target asset entity in Purview
+                                        if classification and purview_entity_guid:
+                                            connector.add_classification_to_entity(purview_entity_guid, classification)
+
+                                        # Mark status as Registered in place & persist Purview term GUID
+                                        glossary_db.mark_term_registered(_tbl_guid, physical_term, term_name, entity_guid=final_term_guid)
+                                        WorkflowManager._update_audit_log_status(term_name, "Registered", approver_comment="Registered back to Purview")
+                                        registered += 1
+                                    except Exception as e:
+                                        print(f"Purview registration error for {term_name}: {e}")
+                                        reg_errors.append(f"Term '{term_name}': Purview registration failed — {str(e)}")
+
+                        WorkflowManager._rebuild_master_from_audit_log()
+                        if reg_errors:
+                            st.session_state["_hub_register_msg"] = "<br>".join(reg_errors)
+                        else:
+                            g_info = f" in Purview Glossary '<b>{glossary_name}</b>'" if glossary_name else " in Microsoft Purview"
+                            st.session_state["_hub_register_msg"] = f"Successfully registered {registered} term(s){g_info}."
+                        st.toast(f"✅ Registered {registered} term(s) to Microsoft Purview!", icon="✅")
+                        st.rerun()
 
                     elif _db_on:
                         # ── Databricks Unity Catalog Logic ────────────────────
@@ -2826,6 +2872,17 @@ def render_master_glossary_tab():
                                     if not _applied and not _skipped:
                                         st.warning("No tags were pushed.")
 
+                # Display registration success message box directly under the Register button
+                if "_hub_register_msg" in st.session_state:
+                    _msg = st.session_state.get("_hub_register_msg")
+                    st.markdown(
+                        f"""<div style="background-color: #ECFDF5; border: 1px solid #10B981; border-radius: 8px; padding: 12px 16px; margin-top: 10px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            <span style="font-size: 18px; color: #10B981;">✅</span>
+                            <span style="font-weight: 600; color: #065F46; font-size: 14px;">{_msg}</span>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+
         # ═══════════════════════════════════════════════════════════════════════
         # CURRENT SESSION APPROVALS TAB
         # ═══════════════════════════════════════════════════════════════════════
@@ -2854,16 +2911,71 @@ def render_master_glossary_tab():
                     "entity_guid": "entity_guid",
                 })
 
+                if classification_filter != "All" and "Classification" in df_session.columns:
+                    df_session = df_session[df_session["Classification"].fillna("").astype(str).str.contains(classification_filter, case=False, regex=False)]
+
+                if hub_term_query and hub_term_query.strip():
+                    _t_q = hub_term_query.strip().lower()
+                    df_session = df_session[
+                        df_session["Business Term"].fillna("").astype(str).str.lower().str.contains(_t_q) |
+                        df_session["Physical Term"].fillna("").astype(str).str.lower().str.contains(_t_q)
+                    ]
+
+                if hub_desc_query and hub_desc_query.strip():
+                    _d_q = hub_desc_query.strip().lower()
+                    df_session = df_session[
+                        df_session["Description"].fillna("").astype(str).str.lower().str.contains(_d_q)
+                    ]
+
                 st.markdown(
-                    f'<div style="background:linear-gradient(145deg,#10B981 0%,#059669 100%);border-radius:12px;padding:14px 20px;margin-bottom:16px;color:#fff;">'
-                    f'<span style="font-size:22px;font-weight:800;">{len(df_session)}</span>'
-                    f'<span style="font-size:12px;margin-left:8px;opacity:0.85;">term(s) approved this session</span></div>',
+                    f'<div style="background:#ECFDF5;border:1px solid #A7F3D0;border-radius:8px;padding:12px 18px;margin-bottom:16px;color:#065F46;display:flex;align-items:center;gap:10px;">'
+                    f'<span style="font-size:18px;">✅</span>'
+                    f'<div><span style="font-size:18px;font-weight:800;color:#065F46;">{len(df_session)}</span>'
+                    f'<span style="font-size:13px;margin-left:8px;color:#047857;font-weight:600;">term(s) approved in this session</span></div></div>',
                     unsafe_allow_html=True
                 )
 
-                _sess_display_cols = ["Type", "Physical Term", "Business Term", "Description", "Classification", "Source", "Version", "Status"]
+                if "Select" not in df_session.columns:
+                    df_session.insert(0, "Select", True)
+
+                _sess_display_cols = ["Select", "Type", "Physical Term", "Business Term", "Description", "Classification", "Source", "Version", "Status"]
                 _sess_display_cols = [c for c in _sess_display_cols if c in df_session.columns]
-                st.dataframe(df_session[_sess_display_cols], use_container_width=True, hide_index=True)
+
+                sess_edited_dfs = []
+                tables_in_session = sorted(set(df_session["table_name"].fillna("—").apply(lambda x: str(x) if x else "—")))
+                for tbl in tables_in_session:
+                    df_tbl = df_session[df_session["table_name"].fillna("—").apply(lambda x: str(x) if x else "—") == tbl]
+                    st.markdown(
+                        f"<div style='margin:16px 0 6px 0;padding:6px 14px;"
+                        f"background:#F3F4F6;border-left:4px solid #6B7280;"
+                        f"border-radius:4px;font-weight:600;font-size:14px;color:#374151;display:flex;align-items:center;gap:6px;'>"
+                        f'<span class="material-symbols-outlined" style="font-size:18px;">table_chart</span> <strong>{tbl}</strong></div>',
+                        unsafe_allow_html=True,
+                    )
+                    res_sess = st.data_editor(
+                        df_tbl[_sess_display_cols],
+                        key=f"hub_session_view_{_safe_mermaid_id(tbl)}",
+                        use_container_width=True,
+                        hide_index=True,
+                        disabled=[c for c in _sess_display_cols if c != "Select"],
+                        column_config={
+                            "Select": st.column_config.CheckboxColumn("Select", help="Check row to select for registration", default=True, width="small"),
+                            "Version": st.column_config.NumberColumn("Version", width="small"),
+                            "Status": st.column_config.TextColumn("Status", width="small"),
+                        }
+                    )
+                    if "table_guid" in df_tbl.columns:
+                        res_sess["table_guid"] = df_tbl["table_guid"].values
+                    if "table_name" in df_tbl.columns:
+                        res_sess["table_name"] = df_tbl["table_name"].values
+                    sess_edited_dfs.append(res_sess)
+
+                if sess_edited_dfs:
+                    combined_sess_df = pd.concat(sess_edited_dfs, ignore_index=True)
+                else:
+                    combined_sess_df = df_session
+
+                target_session_df = combined_sess_df[combined_sess_df["Select"] == True] if "Select" in combined_sess_df.columns else combined_sess_df
 
                 st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
@@ -2871,7 +2983,10 @@ def render_master_glossary_tab():
                 _connectors = st.session_state.integration_connectors
                 _purview_cfg = _connectors.get("Microsoft Purview", {})
                 _db_cfg = _connectors.get("Databricks Unity", {})
-                _purview_on = _purview_cfg.get("status") == "Connected"
+                _creds = st.session_state.get("connector_creds", {})
+                _sec_pur = st.secrets.get("purview", {})
+                _has_purview_creds = bool((_creds.get("purview_account_name") or _sec_pur.get("account_name")) and (_creds.get("purview_client_id") or _sec_pur.get("client_id")))
+                _purview_on = (_purview_cfg.get("status") == "Connected") or _has_purview_creds
                 _db_on = _db_cfg.get("status") == "Connected"
                 can_register = st.session_state.user_role == "Administrator"
 
@@ -2885,92 +3000,139 @@ def render_master_glossary_tab():
                     _platform_name = None
                     _platform_icon = "🔗"
 
-                _btn_disabled = not can_register or not _platform_name
-                _btn_label = f"{_platform_icon} Register {len(df_session)} Session Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
-                _btn_help = "🔒 No permission" if not can_register else ("No integration connected" if not _platform_name else f"Publish session-approved terms to {_platform_name}")
+                _btn_disabled = not can_register or not _platform_name or target_session_df.empty
+                _btn_label = f"{_platform_icon} Register {len(target_session_df)} Session Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
+                _btn_help = "🔒 No permission" if not can_register else ("No integration connected" if not _platform_name else ("Select at least 1 term to register" if target_session_df.empty else f"Publish selected session terms to {_platform_name}"))
 
                 if st.button(_btn_label, type="primary", use_container_width=True, disabled=_btn_disabled, help=_btn_help, key="hub_session_register_btn"):
-                    if _purview_on:
-                        creds = st.session_state.get("connector_creds", {})
-                        account_name = creds.get("purview_account_name", "")
-                        tenant_id = creds.get("purview_tenant_id", "")
-                        client_id = creds.get("purview_client_id", "")
-                        client_secret = creds.get("purview_client_secret", "")
+                    if _purview_on or True:
+                        account_name  = _creds.get("purview_account_name") or _sec_pur.get("account_name", "")
+                        tenant_id     = _creds.get("purview_tenant_id") or _sec_pur.get("tenant_id", "")
+                        client_id     = _creds.get("purview_client_id") or _sec_pur.get("client_id", "")
+                        client_secret = _creds.get("purview_client_secret") or _sec_pur.get("client_secret", "")
 
-                        if not all([account_name, tenant_id, client_id, client_secret]):
-                            st.error("Purview credentials are missing. Reconnect in **Integrations & API**.")
-                        else:
-                            connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
-                            ok, auth_msg = connector.authenticate()
-                            if not ok:
-                                st.error(f"Authentication failed: {auth_msg}")
-                            else:
-                                try:
+                        purview_connected = False
+                        auth_msg = ""
+                        glossary_guid = ""
+                        glossary_name = ""
+                        if all([account_name, tenant_id, client_id, client_secret]):
+                            try:
+                                connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
+                                ok, auth_msg = connector.authenticate()
+                                if ok:
+                                    purview_connected = True
                                     glossaries = connector.get_glossaries()
                                     if isinstance(glossaries, list) and glossaries:
                                         glossary_guid = glossaries[0].get("guid", "")
+                                        glossary_name = glossaries[0].get("name", "")
                                     elif isinstance(glossaries, dict):
                                         glossary_guid = glossaries.get("guid", "")
-                                    else:
-                                        glossary_guid = ""
-                                except Exception as ge:
-                                    st.error(f"Could not fetch glossaries: {ge}")
-                                    glossary_guid = ""
-
-                                if not glossary_guid:
-                                    st.error("No glossary found in Purview. Please create a glossary first.")
+                                        glossary_name = glossaries.get("name", "")
                                 else:
-                                    registered, errors = 0, []
-                                    with st.spinner("Registering session terms to Purview…"):
-                                        for _, row in df_session.iterrows():
-                                            term_name = str(row.get("Business Term", "")).strip()
-                                            definition = str(row.get("Description", "")).strip()
-                                            physical_term = str(row.get("Physical Term", "")).strip()
-                                            classification = str(row.get("Classification", "")).strip() if row.get("Classification") and str(row.get("Classification")) != 'nan' else ""
-                                            if not term_name:
-                                                continue
+                                    purview_connected = False
+                            except Exception as e:
+                                purview_connected = False
+                                auth_msg = str(e)
+                        else:
+                            auth_msg = "Purview connection credentials missing."
+
+                        registered = 0
+                        reg_errors = []
+
+                        if not purview_connected:
+                            reg_errors.append(f"Failed to connect to Microsoft Purview API: {auth_msg}")
+                        elif not glossary_guid:
+                            reg_errors.append(f"Connected to Purview account '{account_name}', but no active Glossary was found in Purview.")
+                        else:
+                            with st.spinner(f"Registering {len(target_session_df)} session term(s) to Microsoft Purview…"):
+                                for _, row in target_session_df.iterrows():
+                                    term_name = str(row.get("Business Term") or row.get("business_term", "")).strip()
+                                    definition = str(row.get("Description") or row.get("description", "")).strip()
+                                    physical_term = str(row.get("Physical Term") or row.get("physical_term", "")).strip()
+                                    classification = str(row.get("Classification", "")).strip() if row.get("Classification") and str(row.get("Classification")) != 'nan' else ""
+                                    _tbl_guid = str(row.get("table_guid") or row.get("table_name") or selected_guid or "").strip()
+                                    if not term_name:
+                                        continue
+
+                                    purview_entity_guid = None
+                                    final_term_guid = None
+                                    try:
+                                        existing_term_guid = connector.get_term_by_name(term_name, glossary_guid=glossary_guid)
+                                        if existing_term_guid:
+                                            connector.update_glossary_term(existing_term_guid, term_name, definition, glossary_guid)
+                                            final_term_guid = existing_term_guid
+                                        else:
+                                            result = connector.create_glossary_term(term_name, definition, glossary_guid)
+                                            final_term_guid = result.get("guid") if isinstance(result, dict) else None
+
+                                        # Step A: Resolve Table Entity GUID if _tbl_guid is a table name instead of a UUID
+                                        table_entity_guid = _tbl_guid
+                                        if _tbl_guid and not ("-" in _tbl_guid and len(_tbl_guid) >= 32):
                                             try:
-                                                purview_entity_guid = connector.search_entity_by_name(physical_term) if physical_term else None
-                                                existing_term_guid = connector.get_term_by_name(term_name)
-                                                if existing_term_guid:
-                                                    connector.update_glossary_term(existing_term_guid, term_name, definition, glossary_guid)
-                                                    final_term_guid = existing_term_guid
-                                                else:
-                                                    result = connector.create_glossary_term(term_name, definition, glossary_guid)
-                                                    final_term_guid = result.get("guid") if isinstance(result, dict) else None
+                                                searched_tbl = connector.search_entity_by_name(_tbl_guid)
+                                                if searched_tbl:
+                                                    table_entity_guid = searched_tbl
+                                            except Exception:
+                                                pass
 
-                                                if final_term_guid and purview_entity_guid:
-                                                    connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
+                                        # Step B: Map term to specific column GUID from table columns
+                                        if table_entity_guid:
+                                            try:
+                                                col_guids = connector.get_table_columns_with_guids(table_entity_guid)
+                                                if isinstance(col_guids, dict) and physical_term:
+                                                    for c_name, c_guid in col_guids.items():
+                                                        if c_name.strip().lower() == physical_term.strip().lower():
+                                                            purview_entity_guid = c_guid
+                                                            break
+                                            except Exception:
+                                                pass
 
-                                                if classification and purview_entity_guid:
-                                                    connector.add_classification_to_entity(purview_entity_guid, classification)
+                                        # Step C: Fallback search by physical term name
+                                        if not purview_entity_guid and physical_term:
+                                            try:
+                                                purview_entity_guid = connector.search_entity_by_name(physical_term)
+                                            except Exception:
+                                                pass
 
-                                                # Update status in DB
-                                                _tbl_guid = str(row.get("table_guid", "")).strip()
-                                                glossary_db.deactivate_term(_tbl_guid, physical_term)
-                                                _next_ver = glossary_db.get_next_version(physical_term)
-                                                glossary_db.store_term(
-                                                    entity_guid=str(purview_entity_guid or final_term_guid or ""),
-                                                    table_guid=_tbl_guid,
-                                                    table_name=str(row.get("table_name", "")).strip().upper(),
-                                                    business_term=term_name,
-                                                    physical_term=physical_term,
-                                                    description=definition,
-                                                    term_type=str(row.get("Type", "Column")),
-                                                    source="MS Purview",
-                                                    confidence=int(row.get("Confidence (%)", 0) or 0),
-                                                    active=1,
-                                                    version=_next_ver,
-                                                    status="Registered",
-                                                    classification=classification,
-                                                )
-                                                registered += 1
-                                            except Exception as ex:
-                                                errors.append(f"{term_name}: {str(ex)}")
-                                    if errors:
-                                        st.warning(f"Registered {registered} term(s) with {len(errors)} error(s):\n" + "\n".join(f"• {e}" for e in errors))
-                                    else:
-                                        st.success(f"✅ {registered} session term(s) registered to Purview.")
+                                        # Step D: Fallback to table entity GUID itself
+                                        if not purview_entity_guid and table_entity_guid:
+                                            purview_entity_guid = table_entity_guid
+
+                                        # Step E: Assign term to target asset entity in Purview
+                                        if final_term_guid and purview_entity_guid:
+                                            connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
+
+                                        # Step F: Add classification to target asset entity in Purview
+                                        if classification and purview_entity_guid:
+                                            connector.add_classification_to_entity(purview_entity_guid, classification)
+
+                                        # Update status in DB in place & persist Purview term GUID
+                                        glossary_db.mark_term_registered(_tbl_guid, physical_term, term_name, entity_guid=final_term_guid)
+                                        WorkflowManager._update_audit_log_status(term_name, "Registered", approver_comment="Registered back to Purview")
+                                        registered += 1
+                                    except Exception as e:
+                                        print(f"Purview registration error for {term_name}: {e}")
+                                        reg_errors.append(f"Term '{term_name}': Purview registration failed — {str(e)}")
+
+                        WorkflowManager._rebuild_master_from_audit_log()
+                        if reg_errors:
+                            st.session_state["_hub_session_register_msg"] = "<br>".join(reg_errors)
+                        else:
+                            g_info = f" in Purview Glossary '<b>{glossary_name}</b>'" if glossary_name else " in Microsoft Purview"
+                            st.session_state["_hub_session_register_msg"] = f"Successfully registered {registered} term(s){g_info}."
+                        st.toast(f"✅ Registered {registered} term(s) to Microsoft Purview!", icon="✅")
+                        st.rerun()
+
+                # Display registration success message box directly under the Register button
+                if "_hub_session_register_msg" in st.session_state:
+                    _msg = st.session_state.get("_hub_session_register_msg")
+                    st.markdown(
+                        f"""<div style="background-color: #ECFDF5; border: 1px solid #10B981; border-radius: 8px; padding: 12px 16px; margin-top: 10px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            <span style="font-size: 18px; color: #10B981;">✅</span>
+                            <span style="font-weight: 600; color: #065F46; font-size: 14px;">{_msg}</span>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
 
 # ============================================
 # SEMANTIC SEARCH TAB
@@ -3798,7 +3960,7 @@ def render_rbac_tab():
         st.markdown(f"- **Edit Glossary:** {'✅ Yes' if perms.get('can_edit_glossary') else '❌ No'}")
         return
 
-    rbac_tab1, rbac_tab2, rbac_tab3 = st.tabs(["👥 Users & Permissions", "🎭 Roles", "➕ Add User"])
+    rbac_tab1, rbac_tab2, rbac_tab3 = st.tabs([":material/group: Users & Permissions", ":material/admin_panel_settings: Roles", ":material/person_add: Add User"])
 
     # ── Tab 1: Users & Permissions ────────────────────────────────────────────
     with rbac_tab1:
