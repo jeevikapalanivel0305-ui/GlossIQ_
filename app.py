@@ -1608,13 +1608,19 @@ def render_search_tab():
                 )
                 try:
                     url = f"https://{st.session_state.connector_creds['purview_account_name']}.purview.azure.com/datamap/api/search/query"
-                    payload = {"keywords": f"{search_query}*", "limit": 100, "filter": {"entityType": source_type_options[selected_source_type]} if selected_source_type != "All" else {}}
+                    # Purview rejects an empty filter, so only send one for a specific source type
+                    payload = {"keywords": f"{search_query}*", "limit": 100}
+                    if selected_source_type != "All":
+                        payload["filter"] = {"entityType": source_type_options[selected_source_type]}
                     connector.authenticate()
                     import requests as _req
                     r = _req.post(url, headers=connector._headers(), json=payload, timeout=30)
                     if r.status_code == 200:
                         raw_results = r.json().get('value', [])
                         filtered_results = [res for res in raw_results if res.get('name', '').lower().startswith(search_query.lower())]
+                        # Without a type filter Purview also returns glossary terms, schemas, etc. — keep tables/views
+                        filtered_results = [res for res in filtered_results
+                                            if any(k in (res.get('entityType') or '').lower() for k in ('table', 'view'))]
                         if not st.session_state.get('purview_collections'):
                             try:
                                 st.session_state.purview_collections = connector.get_collections() or []
@@ -1629,6 +1635,10 @@ def render_search_tab():
                         st.session_state.purview_search_results = filtered_results
                         if not filtered_results:
                             st.session_state.purview_search_no_results = True
+                    else:
+                        # Show Purview's reason instead of a misleading "no matching assets"
+                        st.session_state.purview_search_attempted = False
+                        st.error(f"Purview search failed (HTTP {r.status_code}): {r.text[:300]}")
                 except Exception as e:
                     st.error(str(e))
             st.markdown('</div>', unsafe_allow_html=True)
@@ -1640,9 +1650,6 @@ def render_search_tab():
             st.markdown("### Search Results")
             results_df = pd.DataFrame(st.session_state.purview_search_results)
             saved_ids = st.session_state.perm_cache.get('selected_table_ids', [])
-            # Collection names as Purview shows them — tells apart tables that share a name
-            _coll_names = {c.get('name'): (c.get('friendlyName') or c.get('name'))
-                           for c in st.session_state.get('purview_collections', [])}
 
             # Use individual checkboxes for clear single-click selection
             current_selected = []
@@ -1668,10 +1675,7 @@ def render_search_tab():
                                 st.session_state.perm_cache['selected_table_ids'] = updated_ids
                                 st.rerun()
                         with col_name:
-                            _cid = row.get('collectionId')
-                            _cid = _cid if isinstance(_cid, str) else ""
-                            _coll = _coll_names.get(_cid, _cid)
-                            st.markdown(f"**{row.get('name', '')}**" + (f"  \n:gray[Collection: {_coll}]" if _coll else ""))
+                            st.markdown(f"**{row.get('name', '')}**")
                         with col_type:
                             st.caption(_source_type_label(row.get('entityType', '')))
                         if checked:
@@ -2296,31 +2300,24 @@ def _resolve_purview_target(connector, row, cache):
     return col_guid
 
 
-def _register_rows_to_purview(rows_df, info_fields, selected_guid=None):
-    """
-    Register Glossary Hub rows to Microsoft Purview, sending only `info_fields`:
-      Business Term  → create/update the glossary term and assign it to the column
-      Description    → term definition when Business Term is sent, otherwise the column's description
-      Classification → classification on the column
-    Returns (ok: bool, message_html: str).
-    """
+def _purview_session():
+    """Authenticated Purview connector and its first glossary → (connector, glossary_guid, glossary_name). Raises on failure."""
     creds    = st.session_state.get("connector_creds", {})
     _sec_pur = st.secrets.get("purview", {})
     account_name  = creds.get("purview_account_name") or _sec_pur.get("account_name", "")
     tenant_id     = creds.get("purview_tenant_id") or _sec_pur.get("tenant_id", "")
     client_id     = creds.get("purview_client_id") or _sec_pur.get("client_id", "")
     client_secret = creds.get("purview_client_secret") or _sec_pur.get("client_secret", "")
-
     if not all([account_name, tenant_id, client_id, client_secret]):
-        return False, "Failed to connect to Microsoft Purview API: Purview connection credentials missing."
+        raise Exception("Failed to connect to Microsoft Purview API: Purview connection credentials missing.")
     try:
         connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
         ok, auth_msg = connector.authenticate()
         if not ok:
-            return False, f"Failed to connect to Microsoft Purview API: {auth_msg}"
+            raise Exception(auth_msg)
         glossaries = connector.get_glossaries()
     except Exception as e:
-        return False, f"Failed to connect to Microsoft Purview API: {e}"
+        raise Exception(f"Failed to connect to Microsoft Purview API: {e}")
     if isinstance(glossaries, list) and glossaries:
         glossary_guid, glossary_name = glossaries[0].get("guid", ""), glossaries[0].get("name", "")
     elif isinstance(glossaries, dict):
@@ -2328,7 +2325,31 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None):
     else:
         glossary_guid, glossary_name = "", ""
     if not glossary_guid:
-        return False, f"Connected to Purview account '{account_name}', but no active Glossary was found in Purview."
+        raise Exception(f"Connected to Purview account '{account_name}', but no active Glossary was found in Purview.")
+    return connector, glossary_guid, glossary_name
+
+
+def _hub_ordered_rows(rows_df):
+    # Column rows first, so a table-level row can reuse the table they resolved to
+    return sorted((r for _, r in rows_df.iterrows()), key=lambda r: _cell_str(r, "Type").lower() == "table")
+
+
+def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="insert"):
+    """
+    Register Glossary Hub rows to Microsoft Purview, sending only `info_fields`:
+      Business Term  → create/update the glossary term and assign it to the column
+      Description    → term definition when Business Term is sent, otherwise the column's description
+      Classification → classification on the column
+    mode="insert" adds alongside what the column already has (existing descriptions are kept);
+    mode="update" replaces it: other terms are unassigned from the column, other
+    classifications removed and descriptions overwritten.
+    Returns (ok: bool, message_html: str).
+    """
+    try:
+        connector, glossary_guid, glossary_name = _purview_session()
+    except Exception as e:
+        return False, str(e)
+    replace = mode == "update"
 
     send_term = "Business Term" in info_fields
     send_desc = "Description" in info_fields
@@ -2337,8 +2358,8 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None):
     counts = {"Business Term": 0, "Description": 0, "Classification": 0}
 
     lookup_cache = {}
-    # Column rows first, so a table-level row can reuse the table they resolved to
-    ordered = sorted((r for _, r in rows_df.iterrows()), key=lambda r: _cell_str(r, "Type").lower() == "table")
+    kept_desc, removed = [], {"terms": 0, "classifications": 0}
+    ordered = _hub_ordered_rows(rows_df)
     with st.spinner(f"Registering {len(rows_df)} term(s) to Microsoft Purview…"):
         for row in ordered:
             term_name      = _cell_str(row, "Business Term", "Glossary Term", "business_term") if send_term else ""
@@ -2361,7 +2382,9 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None):
                     term_desc = definition if send_desc else None
                     existing_term_guid = connector.get_term_by_name(term_name, glossary_guid=glossary_guid)
                     if existing_term_guid:
-                        connector.update_glossary_term(existing_term_guid, term_name, term_desc, glossary_guid)
+                        # Insert never overwrites an existing term's definition; Update does
+                        if replace and term_desc is not None:
+                            connector.update_glossary_term(existing_term_guid, term_name, term_desc, glossary_guid)
                         final_term_guid = existing_term_guid
                     else:
                         result = connector.create_glossary_term(term_name, term_desc or "", glossary_guid)
@@ -2370,17 +2393,34 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None):
                         raise Exception("Purview did not return a glossary term id")
                     if not connector.assign_term_to_entity(final_term_guid, purview_entity_guid):
                         raise Exception(f"assigning the term to {physical_term} was rejected — {connector.last_error}")
+                    if replace:
+                        # Unassign the column's previous terms (the glossary terms themselves are kept)
+                        for old in connector.get_entity_glossary_state(purview_entity_guid)["terms"]:
+                            if old["guid"] and old["guid"] != final_term_guid:
+                                connector.unassign_term_from_entity(old["guid"], purview_entity_guid)
+                                removed["terms"] += 1
                     sent.append("Business Term")
                     if definition:
                         sent.append("Description")
                 elif definition:
-                    # No business term sent — the description goes on the column itself
-                    connector.update_entity_description(purview_entity_guid, definition)
-                    sent.append("Description")
+                    # No business term sent — the description goes on the column itself.
+                    # A column holds one description: Insert keeps an existing one, Update replaces it.
+                    current_desc = connector.get_entity_glossary_state(purview_entity_guid)["description"]
+                    if replace or not current_desc:
+                        connector.update_entity_description(purview_entity_guid, definition)
+                        sent.append("Description")
+                    else:
+                        kept_desc.append(physical_term)
 
                 if classification:
                     if not connector.add_classification_to_entity(purview_entity_guid, classification):
                         raise Exception(f"classification '{classification}' was rejected — {connector.last_error}")
+                    if replace:
+                        for old in connector.get_entity_glossary_state(purview_entity_guid)["classifications"]:
+                            if old != classification:
+                                if not connector.remove_classification_from_entity(purview_entity_guid, old):
+                                    raise Exception(f"removing old classification '{old}' was rejected — {connector.last_error}")
+                                removed["classifications"] += 1
                     sent.append("Classification")
 
                 for f in sent:
@@ -2400,9 +2440,60 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None):
     sent = " · ".join(f"{counts[f]} {f.lower()}{'s' if counts[f] != 1 else ''}"
                       for f in info_fields if counts[f])
     msg = f"Successfully registered {registered} term(s){g_info}." + (f"<br>Sent: {sent}" if sent else "")
+    if replace and (removed["terms"] or removed["classifications"]):
+        msg += (f"<br>Replaced: {removed['terms']} old term assignment(s) and "
+                f"{removed['classifications']} old classification(s) removed")
+    if kept_desc:
+        msg += f"<br>Kept the existing Purview description for: {_html.escape(', '.join(kept_desc))}"
     if skipped:
         msg += f"<br>Skipped {len(skipped)} (no selected information to send): {_html.escape(', '.join(skipped))}"
     return True, msg
+
+
+def _hub_finish_register(rows_df, info_fields, msg_key, selected_guid, mode):
+    st.session_state[msg_key] = _register_rows_to_purview(rows_df, info_fields, selected_guid, mode=mode)
+    ok = st.session_state[msg_key][0]
+    st.toast("Registered to Microsoft Purview" if ok else "Registration finished with errors")
+
+
+def _hub_start_register(rows_df, info_fields, msg_key, selected_guid=None):
+    """Register button: open the Insert / Update dialog right away."""
+    st.session_state["_hub_pending_register"] = {
+        "rows": rows_df, "fields": info_fields, "msg_key": msg_key, "selected_guid": selected_guid,
+    }
+    _hub_register_dialog()
+
+
+def _hub_cancel_register():
+    st.session_state.pop("_hub_pending_register", None)
+
+
+@st.dialog("Register to Microsoft Purview", width="large", on_dismiss=_hub_cancel_register)
+def _hub_register_dialog():
+    pending = st.session_state["_hub_pending_register"]
+    st.markdown(f"Register **{len(pending['rows'])}** selected term(s). Choose how:")
+    st.markdown(
+        "- **Insert** — add the new terms and classifications alongside the existing ones. "
+        "Existing descriptions are kept.\n"
+        "- **Update** — replace them: the old terms are unassigned from these columns, old classifications "
+        "removed and descriptions overwritten. The old glossary terms stay in the glossary."
+    )
+    c1, c2, c3 = st.columns(3)
+    mode = None
+    with c1:
+        if st.button("Insert", use_container_width=True, key="hub_reg_insert"):
+            mode = "insert"
+    with c2:
+        if st.button("Update", type="primary", use_container_width=True, key="hub_reg_update"):
+            mode = "update"
+    with c3:
+        if st.button("Cancel", use_container_width=True, key="hub_reg_cancel"):
+            _hub_cancel_register()
+            st.rerun()
+    if mode:
+        st.session_state.pop("_hub_pending_register", None)
+        _hub_finish_register(pending["rows"], pending["fields"], pending["msg_key"], pending["selected_guid"], mode)
+        st.rerun()
 
 
 def _hub_register_message(state_key):
@@ -2622,6 +2713,8 @@ def render_master_glossary_tab():
 
         # ── Which information to show and register back to Purview ────────────
         hub_info_fields = _hub_info_selector()
+        if st.session_state.get("_hub_pending_register"):
+            _hub_register_dialog()
         hub_hidden_info = [f for f in _HUB_INFO_OPTIONS if f not in hub_info_fields]
 
         # ── Sub-tabs: All Terms vs Current Session ───────────────────────────
@@ -2919,12 +3012,7 @@ def render_master_glossary_tab():
 
                 if st.button(_btn_label, type="primary", use_container_width=True, disabled=_btn_disabled, help=_btn_help, key="hub_register_btn"):
                     if _purview_on or True:
-                        st.session_state["_hub_register_msg"] = _register_rows_to_purview(
-                            target_register_df, hub_info_fields, selected_guid)
-                        _reg_ok = st.session_state["_hub_register_msg"][0]
-                        st.toast("✅ Registered to Microsoft Purview!" if _reg_ok else "⚠️ Registration finished with errors",
-                                 icon="✅" if _reg_ok else "⚠️")
-                        st.rerun()
+                        _hub_start_register(target_register_df, hub_info_fields, "_hub_register_msg", selected_guid)
 
                     elif _db_on:
                         # ── Databricks Unity Catalog Logic ────────────────────
@@ -3093,12 +3181,7 @@ def render_master_glossary_tab():
 
                 if st.button(_btn_label, type="primary", use_container_width=True, disabled=_btn_disabled, help=_btn_help, key="hub_session_register_btn"):
                     if _purview_on or True:
-                        st.session_state["_hub_session_register_msg"] = _register_rows_to_purview(
-                            target_session_df, hub_info_fields)
-                        _reg_ok = st.session_state["_hub_session_register_msg"][0]
-                        st.toast("✅ Registered to Microsoft Purview!" if _reg_ok else "⚠️ Registration finished with errors",
-                                 icon="✅" if _reg_ok else "⚠️")
-                        st.rerun()
+                        _hub_start_register(target_session_df, hub_info_fields, "_hub_session_register_msg")
 
                 # Display registration result directly under the Register button
                 _hub_register_message("_hub_session_register_msg")

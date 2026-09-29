@@ -723,6 +723,39 @@ class PurviewConnector:
             self.last_error = str(e)
             return False
 
+    def remove_classification_from_entity(self, entity_guid, classification_name, debug=False):
+        """Remove one classification from an entity. Returns True on success (sets last_error otherwise)."""
+        success, msg = self.authenticate(debug=debug)
+        if not success:
+            raise Exception(f"Authentication failed: {msg}")
+        url = f"{self.base_url}/datamap/api/atlas/v2/entity/guid/{entity_guid}/classification/{requests.utils.quote(classification_name, safe='')}"
+        self.last_error = ""
+        try:
+            r = requests.delete(url, headers=self._headers(), timeout=30)
+            if r.status_code in (200, 204):
+                return True
+            self.last_error = f"HTTP {r.status_code}: {r.text[:300]}"
+        except Exception as e:
+            self.last_error = str(e)
+        return False
+
+    def get_entity_glossary_state(self, entity_guid, debug=False):
+        """
+        What an entity currently carries in Purview:
+        {"terms": [{"guid", "name"}], "classifications": [names], "description": str}
+        """
+        data = self.get_entity(entity_guid, debug=debug) or {}
+        entity = data.get("entity") or {}
+        attrs = entity.get("attributes") or {}
+        meanings = (entity.get("relationshipAttributes") or {}).get("meanings") or []
+        return {
+            "terms": [{"guid": m.get("guid"), "name": m.get("displayText") or ""}
+                      for m in meanings
+                      if isinstance(m, dict) and m.get("relationshipStatus", "ACTIVE") == "ACTIVE"],
+            "classifications": [c.get("typeName") for c in entity.get("classifications") or [] if c.get("typeName")],
+            "description": attrs.get("userDescription") or attrs.get("description") or "",
+        }
+
     def _ensure_classification_type(self, classification_name):
         """Create the classification type in Purview if it doesn't already exist."""
         url = f"{self.base_url}/datamap/api/atlas/v2/types/typedefs"
