@@ -449,7 +449,8 @@ class PurviewConnector:
             raise Exception(err)
 
     def update_glossary_term(self, term_guid, name, description, glossary_guid, debug=False):
-        """Update an existing glossary term in Purview (partial endpoint with fallback)."""
+        """Update an existing glossary term in Purview (partial endpoint with fallback).
+        description=None leaves the term's current description untouched."""
         success, msg = self.authenticate(debug=debug)
         if not success:
             raise Exception(f"Authentication failed: {msg}")
@@ -457,10 +458,9 @@ class PurviewConnector:
         # Try exact user-specified partial update endpoint: PUT /datamap/api/atlas/v2/glossary/term/{termId}/partial?api-version=2023-09-01
         url_partial = f"{self.base_url}/datamap/api/atlas/v2/glossary/term/{term_guid}/partial"
         params = {"api-version": "2023-09-01"}
-        payload_partial = {
-            "name": name,
-            "shortDescription": description
-        }
+        payload_partial = {"name": name}
+        if description is not None:
+            payload_partial["shortDescription"] = description
 
         try:
             r = requests.put(url_partial, headers=self._headers(), params=params, json=payload_partial, timeout=30)
@@ -468,6 +468,10 @@ class PurviewConnector:
                 return r.json() if r.text else True
         except Exception:
             pass
+
+        # A full PUT replaces the whole term, so it can't leave the description untouched
+        if description is None:
+            raise Exception(f"Failed to update term '{name}': partial update was rejected")
 
         # Fallback to standard term update endpoint
         url_full = f"{self.base_url}/datamap/api/atlas/v2/glossary/term/{term_guid}"
@@ -503,6 +507,23 @@ class PurviewConnector:
             return None
         except Exception:
             return None
+
+    def find_tables_by_name(self, table_name, debug=False):
+        """All table entities whose name is exactly table_name → [{id, qualifiedName, entityType}]."""
+        success, msg = self.authenticate(debug=debug)
+        if not success:
+            raise Exception(f"Authentication failed: {msg}")
+        url = f"{self.base_url}/datamap/api/search/query"
+        params = {"api-version": "2023-09-01"}
+        payload = {"keywords": table_name, "limit": 50}
+        r = requests.post(url, headers=self._headers(), params=params, json=payload, timeout=30)
+        if r.status_code != 200:
+            raise Exception(f"Purview search failed (HTTP {r.status_code}): {r.text[:300]}")
+        return [
+            {"id": v.get("id"), "qualifiedName": v.get("qualifiedName", ""), "entityType": v.get("entityType", "")}
+            for v in r.json().get("value", [])
+            if (v.get("name") or "").upper() == table_name.upper() and "table" in (v.get("entityType") or "").lower()
+        ]
 
     def get_term_by_name(self, term_name, glossary_guid=None, debug=False):
         """Search for a glossary term by its exact name and return its GUID"""
@@ -547,12 +568,14 @@ class PurviewConnector:
         # Method 1: POST /datamap/api/atlas/v2/glossary/terms/{term_guid}/assignedEntities
         url1 = f"{self.base_url}/datamap/api/atlas/v2/glossary/terms/{term_guid}/assignedEntities"
         payload1 = [{"guid": entity_guid}]
+        self.last_error = ""
         try:
             r1 = requests.post(url1, headers=headers, json=payload1, timeout=30)
             if r1.status_code in (200, 201, 204):
                 return True
-        except Exception:
-            pass
+            self.last_error = f"HTTP {r1.status_code}: {r1.text[:300]}"
+        except Exception as e:
+            self.last_error = str(e)
 
         # Method 2: POST with relationshipStatus ACTIVE
         payload2 = [{"guid": entity_guid, "relationshipStatus": "ACTIVE"}]
@@ -572,7 +595,9 @@ class PurviewConnector:
                 if isinstance(entity_obj, dict) and "entity" in entity_obj:
                     entity = entity_obj["entity"]
                     meanings = entity.get("meanings", [])
-                    if not any(isinstance(m, dict) and m.get("termGuid") == term_guid for m in meanings):
+                    if any(isinstance(m, dict) and m.get("termGuid") == term_guid for m in meanings):
+                        return True  # already assigned
+                    else:
                         meanings.append({"termGuid": term_guid})
                         entity["meanings"] = meanings
                         r_put = requests.put(f"{self.base_url}/datamap/api/atlas/v2/entity", headers=headers, json=entity_obj, timeout=30)
@@ -675,6 +700,7 @@ class PurviewConnector:
         url = f"{self.base_url}/datamap/api/atlas/v2/entity/guid/{entity_guid}/classifications"
         payload = [{"typeName": classification_name}]
 
+        self.last_error = ""
         try:
             r = requests.post(url, headers=self._headers(), json=payload, timeout=30)
             if r.status_code not in (200, 201, 204):
@@ -690,9 +716,11 @@ class PurviewConnector:
                 if r2.status_code not in (200, 201, 204):
                     if "already" in r2.text.lower():
                         return True
+                    self.last_error = f"HTTP {r2.status_code}: {r2.text[:300]}"
                     return False
             return True
-        except Exception:
+        except Exception as e:
+            self.last_error = str(e)
             return False
 
     def _ensure_classification_type(self, classification_name):

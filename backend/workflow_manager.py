@@ -32,6 +32,27 @@ APPROVAL_QUEUE_STORE  = "backend/approval_queue.json"
 MASTER_STORE          = "backend/glossary_master.json"
 AUDIT_LOG_STORE       = "backend/audit_log.json"
 
+APPROVED_STATUSES  = ("Approved", "Approved (Merged)", "Registered")
+SUGGESTABLE_FIELDS = ("term_name", "definition", "classification")
+FIELD_LABELS       = (("Business Term", "term_name"), ("Description", "definition"),
+                      ("Classification", "classification"))
+
+
+def _norm(value):
+    """Case/whitespace-insensitive form of a value for comparisons."""
+    return " ".join(str(value or "").split()).lower()
+
+
+def is_suggested(entry, field):
+    """True if a queue / audit entry carries `field` (entries without suggested_fields carry all)."""
+    fields = entry.get("suggested_fields")
+    return fields is None or field in fields
+
+
+def hub_value(entry, field):
+    """Value to store in the Glossary Hub: None (NULL) for fields that were not generated."""
+    return entry.get(field) if is_suggested(entry, field) else None
+
 
 class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
@@ -108,6 +129,10 @@ class WorkflowManager:
             "physical_term":    entry.get("physical_term") or entry.get("related_column") or "",
             "term_type":        entry.get("term_type", "Column"),
             "classification":   entry.get("classification", ""),
+            "suggested_fields": entry.get("suggested_fields"),
+            "source_type":          entry.get("source_type", ""),
+            "table_qualified_name": entry.get("table_qualified_name", ""),
+            "table_entity_guid":    entry.get("table_entity_guid", ""),
             "conflict_found":   entry.get("conflict_found", False),
             "status":           final_status,
             "approver_comment": approver_comment,
@@ -187,7 +212,7 @@ class WorkflowManager:
 
             bucket = master[asset_guid]
             entry_phys = (entry.get("physical_term") or entry.get("term_name") or "").strip().lower()
-            entry_biz = (entry.get("term_name") or "").strip().lower()
+            entry_biz = (hub_value(entry, "term_name") or "").strip().lower()
             entry_status = entry.get("status", "")
             is_approved = entry_status in ("Approved", "Approved (Merged)", "Registered")
 
@@ -210,12 +235,15 @@ class WorkflowManager:
                 "entity_guid":              entry.get("term_id"),
                 "table_guid":               asset_guid,
                 "table_name":               table_name,
-                "Business Term":            entry.get("term_name"),
+                "Business Term":            hub_value(entry, "term_name"),
                 "Physical Term":            entry.get("physical_term") or entry.get("term_name"),
-                "Definition / Description": entry.get("definition"),
-                "Classification":           entry.get("classification", ""),
+                "Definition / Description": hub_value(entry, "definition"),
+                "Classification":           hub_value(entry, "classification"),
                 "Type":                     entry.get("term_type", "Column"),
                 "Source":                   entry.get("source", "Manual"),
+                "Source Type":              entry.get("source_type", ""),
+                "table_qualified_name":     entry.get("table_qualified_name", ""),
+                "table_entity_guid":        entry.get("table_entity_guid", ""),
                 "Confidence (%)":           entry.get("confidence_score", 0),
                 "Active":                   1 if is_approved else 0,
                 "Version":                  next_version,
@@ -236,7 +264,8 @@ class WorkflowManager:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
-    def create_suggested_term(cls, term_name, definition, source="Manual", confidence_score=80, table_name="", term_type="Column", physical_term="", classification=""):
+    def create_suggested_term(cls, term_name, definition, source="Manual", confidence_score=80, table_name="", term_type="Column", physical_term="", classification="", suggested_fields=None,
+                              source_type="", table_qualified_name="", table_entity_guid=""):
         """
         Creates a new AI-suggested term and adds it to both:
           - ai_suggested_terms store
@@ -245,8 +274,17 @@ class WorkflowManager:
         Prevents duplicates: if a term with the same name already exists in
         Pending or Conflict Detected state, returns its existing term_id.
 
+        suggested_fields: subset of ("term_name", "definition", "classification") the
+        suggestion actually provides (None means all). Only these are shown in the
+        Approval Queue; the others are stored as NULL in the Glossary Hub on approval.
+        term_name is still required as the queue identity (the physical name when the
+        business term was not generated).
+
         Returns the generated (or existing) term_id.
         """
+        if suggested_fields is not None:
+            suggested_fields = [f for f in SUGGESTABLE_FIELDS if f in suggested_fields]
+
         # Deduplication: skip if same (term_name, table_name) is already queued and not yet decided
         _tname  = term_name.strip().lower()
         _tbl    = (table_name or "").strip().lower()
@@ -277,6 +315,11 @@ class WorkflowManager:
             "term_type":        term_type,
             "physical_term":    physical_term.strip() if physical_term else "",
             "classification":   classification.strip() if classification else "",
+            "suggested_fields": suggested_fields,
+            # Which physical table this term belongs to (tables can share a name across databases)
+            "source_type":          source_type or "",
+            "table_qualified_name": table_qualified_name or "",
+            "table_entity_guid":    table_entity_guid or "",
         }
 
         # Persist to ai_suggested_terms — deduplicate by (term_name, table_name)
@@ -470,9 +513,19 @@ class WorkflowManager:
         if source_filter:
             audit_log = [e for e in audit_log if e.get("source") == source_filter]
 
+        # ── No business term generated: term_name is only the column name, so name
+        #    matching is meaningless — conflict only when the column is already approved.
+        name_checks = is_suggested(entry, "term_name")
+        if not name_checks:
+            current = cls.find_existing_approved(entry.get("table_name"), physical, entry_source)
+            if current and current["match"] == "same_column":
+                conflict_found = True
+                existing_name  = current.get("term_name")
+                match_type     = "Column Already Mapped"
+
         # ── Check 1: same connector + same table + same column + SAME business term
         #    → conflict (merge only)
-        if physical and table:
+        elif physical and table:
             same_col_same_term = next(
                 (
                     e for e in audit_log
@@ -492,7 +545,7 @@ class WorkflowManager:
 
         # ── Check 2: same connector + same table + same column + DIFFERENT business term
         #    → conflict (all options: approve, reject, merge)
-        if not conflict_found and physical and table:
+        if not conflict_found and name_checks and physical and table:
             diff_term = next(
                 (
                     e for e in audit_log
@@ -511,7 +564,7 @@ class WorkflowManager:
                 match_type     = "Different Business Term Already Approved"
 
         # ── Check 3: Glossary Hub (master store) — exact/fuzzy name match ────
-        if not conflict_found:
+        if not conflict_found and name_checks:
             hub_conflict, hub_id, hub_name, hub_match = cls.check_conflict_with_hub(
                 term_name, source_filter=source_filter,
                 table_name=entry.get("table_name", ""),
@@ -539,6 +592,142 @@ class WorkflowManager:
 
         cls._update_queue_entry(term_id, updates)
         return conflict_found, match_type
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Field-level conflict explanation (used by the Approval Queue UI)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def find_existing_approved(cls, table_name, physical_term, source="", term_names=()):
+        """
+        Find the currently approved record a queue entry would collide with.
+
+        Looks for the same table + column first (audit log, then Glossary Hub), then
+        for the same business term in the same table on a different column.
+        Unity Catalog entries only match Unity Catalog records.
+
+        Returns a dict with term_name, definition, classification, physical_term,
+        table_name, version, decided_on and match ("same_column" | "same_name"),
+        or None.
+        """
+        tbl  = _norm(table_name)
+        phys = _norm(physical_term)
+        uc_only = source == "Databricks Unity Catalog"
+        master = cls._load_master()
+        master_records = [
+            r for recs in master.values() for r in recs
+            if r.get("Active") == 1 and (not uc_only or r.get("Source") == source)
+        ]
+        version_by_id = {r.get("entity_guid"): r.get("Version") for r in master_records}
+
+        def _from_master(r, match):
+            return {
+                "term_name":      r.get("Business Term") or "",
+                "definition":     r.get("Definition / Description") or r.get("Description") or "",
+                "classification": r.get("Classification") or "",
+                "physical_term":  r.get("Physical Term") or "",
+                "table_name":     r.get("table_name") or "",
+                "version":        r.get("Version"),
+                "decided_on":     (r.get("Stored At") or "")[:10],
+                "match":          match,
+            }
+
+        if tbl and phys:
+            approved = [
+                e for e in cls.load_audit_log()
+                if e.get("status") in APPROVED_STATUSES
+                and _norm(e.get("table_name")) == tbl
+                and _norm(e.get("physical_term")) == phys
+                and (not uc_only or e.get("source") == source)
+            ]
+            if approved:
+                latest = max(approved, key=lambda e: e.get("decision_date") or "")
+                return {
+                    "term_name":      latest.get("term_name") or "",
+                    "definition":     latest.get("definition") or "",
+                    "classification": latest.get("classification") or "",
+                    "physical_term":  latest.get("physical_term") or "",
+                    "table_name":     latest.get("table_name") or "",
+                    "version":        version_by_id.get(latest.get("term_id")),
+                    "decided_on":     (latest.get("decision_date") or "")[:10],
+                    "match":          "same_column",
+                }
+            for r in master_records:
+                if _norm(r.get("table_name")) == tbl and _norm(r.get("Physical Term")) == phys:
+                    return _from_master(r, "same_column")
+
+        names = {_norm(n) for n in term_names if n}
+        if names:
+            for r in master_records:
+                r_tbl = _norm(r.get("table_name"))
+                if tbl and r_tbl and r_tbl != tbl:
+                    continue
+                if _norm(r.get("Business Term")) in names:
+                    return _from_master(r, "same_name")
+        return None
+
+    @classmethod
+    def describe_conflict(cls, entry):
+        """
+        Explain a queue entry's conflict field by field against the approved record.
+
+        Returns a dict:
+          existing — the approved record (see find_existing_approved) or None
+          rows     — [{"field", "current", "suggested", "state"}] for the generated fields
+                     only; state is one of same | changed | added | duplicate | other_column
+          fields   — labels of the fields in conflict (e.g. ["Classification"])
+          nulled   — labels of the fields not generated (stored as NULL on approval)
+          summary  — short human-readable conflict label
+        """
+        existing = cls.find_existing_approved(
+            entry.get("table_name"),
+            entry.get("physical_term") or entry.get("related_column"),
+            entry.get("source", ""),
+            term_names=(entry.get("existing_term_name"), entry.get("term_name"))
+                       if is_suggested(entry, "term_name") else (),
+        )
+        nulled = [label for label, key in FIELD_LABELS if not is_suggested(entry, key)]
+        if not existing:
+            return {"existing": None, "rows": [], "fields": [], "nulled": nulled,
+                    "summary": entry.get("conflict_match_type") or "Conflict Detected"}
+
+        rows, fields = [], []
+
+        if existing["match"] == "same_name":
+            rows.append({"field": "Physical Term",
+                         "current": existing["physical_term"],
+                         "suggested": entry.get("physical_term") or "",
+                         "state": "other_column"})
+
+        for label, key in FIELD_LABELS:
+            if not is_suggested(entry, key):
+                continue
+            current   = existing.get(key) or ""
+            suggested = entry.get(key) or ""
+            if existing["match"] == "same_name" and key == "term_name":
+                state = "duplicate"
+            elif _norm(current) == _norm(suggested):
+                state = "same"
+            elif not _norm(current):
+                state = "added"
+            else:
+                state = "changed"
+            if state in ("changed", "duplicate"):
+                fields.append(label)
+            rows.append({"field": label, "current": current, "suggested": suggested, "state": state})
+
+        if existing["match"] == "same_name":
+            summary = f"Business Term already used by column {existing['physical_term'] or '—'}"
+        elif fields:
+            summary = "Conflict in " + ", ".join(fields)
+        else:
+            summary = "Identical to the approved version"
+        return {"existing": existing, "rows": rows, "fields": fields, "nulled": nulled, "summary": summary}
+
+    @classmethod
+    def recheck_all_conflicts(cls):
+        """Public wrapper: re-run conflict checks on every undecided queue entry."""
+        cls._recheck_pending_conflicts()
 
     @classmethod
     def _recheck_pending_conflicts(cls):
@@ -607,26 +796,30 @@ class WorkflowManager:
         safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
         asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{term_id}"
         phys_term = entry.get("physical_term") or entry.get("term_name") or ""
-        biz_term = entry.get("term_name") or ""
+        biz_term = hub_value(entry, "term_name") or ""
         # Deactivate previous active record for this physical term
         glossary_db.deactivate_term(asset_guid, phys_term)
         # Deactivate previous active record for this business term name
-        glossary_db.deactivate_by_business_term(asset_guid, biz_term)
+        if biz_term:
+            glossary_db.deactivate_by_business_term(asset_guid, biz_term)
         next_ver = glossary_db.get_next_version(phys_term, table_guid=asset_guid)
         glossary_db.store_term(
             entity_guid=term_id,
             table_guid=asset_guid,
             table_name=raw_table.upper() if raw_table else "Workflow Approved Terms",
-            business_term=entry.get("term_name", ""),
+            business_term=hub_value(entry, "term_name"),
             physical_term=phys_term,
-            description=entry.get("definition", ""),
+            description=hub_value(entry, "definition"),
             term_type=entry.get("term_type", "Column"),
             source=entry.get("source", "AI Suggester"),
             confidence=entry.get("confidence_score", 0),
             active=1,
             version=next_ver,
             status="Approved",
-            classification=entry.get("classification", ""),
+            classification=hub_value(entry, "classification"),
+            source_type=entry.get("source_type") or None,
+            table_qualified_name=entry.get("table_qualified_name") or None,
+            table_entity_guid=entry.get("table_entity_guid") or None,
         )
 
         # 4. Update queue entry
@@ -682,15 +875,19 @@ class WorkflowManager:
             entity_guid=term_id,
             table_guid=asset_guid,
             table_name=raw_table.upper() if raw_table else "Workflow Terms",
-            business_term=entry.get("term_name", ""),
+            business_term=hub_value(entry, "term_name"),
             physical_term=phys_term,
-            description=entry.get("definition", ""),
+            description=hub_value(entry, "definition"),
             term_type=entry.get("term_type", "Column"),
             source=entry.get("source", "AI Suggester"),
             confidence=entry.get("confidence_score", 0),
             active=0,
             version=next_ver,
             status="Rejected",
+            classification=hub_value(entry, "classification"),
+            source_type=entry.get("source_type") or None,
+            table_qualified_name=entry.get("table_qualified_name") or None,
+            table_entity_guid=entry.get("table_entity_guid") or None,
         )
 
         return True, "Term rejected"
@@ -806,25 +1003,29 @@ class WorkflowManager:
         safe_table = raw_table.replace(" ", "_").replace("/", "_") if raw_table else ""
         asset_guid = f"workflow_{safe_table.upper()}" if safe_table else f"workflow_{term_id}"
         phys_term = entry.get("physical_term") or entry.get("term_name") or ""
-        biz_term = entry.get("term_name") or ""
+        biz_term = hub_value(entry, "term_name") or ""
         glossary_db.deactivate_term(asset_guid, phys_term)
         # Deactivate previous active record for this business term name
-        glossary_db.deactivate_by_business_term(asset_guid, biz_term)
+        if biz_term:
+            glossary_db.deactivate_by_business_term(asset_guid, biz_term)
         next_ver = glossary_db.get_next_version(phys_term, table_guid=asset_guid)
         glossary_db.store_term(
             entity_guid=term_id,
             table_guid=asset_guid,
             table_name=raw_table.upper() if raw_table else "Workflow Approved Terms",
-            business_term=entry.get("term_name", ""),
+            business_term=hub_value(entry, "term_name"),
             physical_term=phys_term,
-            description=entry.get("definition", ""),
+            description=hub_value(entry, "definition"),
             term_type=entry.get("term_type", "Column"),
             source=entry.get("source", "AI Suggester"),
             confidence=entry.get("confidence_score", 0),
             active=1,
             version=next_ver,
             status="Approved (Merged)",
-            classification=entry.get("classification", ""),
+            classification=hub_value(entry, "classification"),
+            source_type=entry.get("source_type") or None,
+            table_qualified_name=entry.get("table_qualified_name") or None,
+            table_entity_guid=entry.get("table_entity_guid") or None,
         )
 
         # 4. Update queue entry

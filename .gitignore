@@ -7,8 +7,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Streamlit
-.streamlit/
+# Streamlit (keep the theme config, never the secrets)
+.streamlit/*
 !.streamlit/config.toml
 
 # Environments

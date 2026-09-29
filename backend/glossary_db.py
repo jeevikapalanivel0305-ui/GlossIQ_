@@ -56,6 +56,13 @@ def init_db():
         conn.execute("ALTER TABLE glossary_terms ADD COLUMN classification TEXT DEFAULT ''")
     except Exception:
         pass  # column already exists
+    # Migration: where the term's table lives (source type chosen in Asset Search,
+    # database/schema location and the Purview table entity GUID)
+    for col in ("source_type", "table_qualified_name", "table_entity_guid"):
+        try:
+            conn.execute(f"ALTER TABLE glossary_terms ADD COLUMN {col} TEXT")
+        except Exception:
+            pass  # column already exists
     conn.commit()
     conn.close()
 
@@ -63,17 +70,19 @@ def init_db():
 def store_term(entity_guid, table_guid, table_name, business_term, physical_term,
                description, term_type="Column", source="AI Suggester",
                confidence=0, active=1, version=1, status="Approved", stored_at=None,
-               classification=""):
+               classification="", source_type=None, table_qualified_name=None, table_entity_guid=None):
     """Store a single term record in the database."""
     conn = _get_conn()
     conn.execute("""
-        INSERT INTO glossary_terms 
+        INSERT INTO glossary_terms
         (entity_guid, table_guid, table_name, business_term, physical_term,
-         description, classification, type, source, confidence, active, version, status, stored_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         description, classification, type, source, confidence, active, version, status, stored_at,
+         source_type, table_qualified_name, table_entity_guid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (entity_guid, table_guid, table_name, business_term, physical_term,
-          description, classification or "", term_type, source, confidence, active, version, status,
-          stored_at or datetime.now().isoformat()))
+          description, classification, term_type, source, confidence, active, version, status,
+          stored_at or datetime.now().isoformat(),
+          source_type, table_qualified_name, table_entity_guid))
     conn.commit()
     conn.close()
 
@@ -508,9 +517,10 @@ def check_approved_term_exists(term_name, physical_term=None):
             AND LOWER(physical_term) = LOWER(?)
             GROUP BY LOWER(business_term), LOWER(physical_term)
         """, (physical_term.strip(),)).fetchall()
-        seen = {(r['business_term'].lower(), r['physical_term'].lower()) for r in results}
+        # business_term can be NULL when only other fields were generated
+        seen = {((r['business_term'] or '').lower(), (r['physical_term'] or '').lower()) for r in results}
         for r in phys_rows:
-            if (r['business_term'].lower(), r['physical_term'].lower()) not in seen:
+            if ((r['business_term'] or '').lower(), (r['physical_term'] or '').lower()) not in seen:
                 results.append(dict(r))
     conn.close()
     return results

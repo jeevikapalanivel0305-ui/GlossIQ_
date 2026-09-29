@@ -6,6 +6,7 @@ import os
 import sys
 import base64
 import html as _html
+import re
 from datetime import datetime
 
 # Ensure backend modules can be imported
@@ -16,7 +17,7 @@ from backend.ai_recommender import generate_glossary_suggestions
 from backend.internal_governance import generate_internal_governance
 from backend.governance_engine import GovernanceEngine
 from backend.persistence_manager import PersistenceManager, load_rbac, save_rbac
-from backend.workflow_manager import WorkflowManager
+from backend.workflow_manager import WorkflowManager, is_suggested
 from backend.semantic_search import semantic_search_glossary, keyword_search_glossary
 from backend import glossary_db
 
@@ -298,15 +299,8 @@ _needs_reinit = (
     or 'Microsoft Purview' not in st.session_state.get('integration_connectors', {})
 )
 if _needs_reinit:
-    st.session_state.integration_connectors = {
-        'Microsoft Purview': {'letter': 'MP',  'image': 'purview.jfif',    'desc': 'Data Governance Map','color_bg': '#EFF6FF', 'color_txt': '#1D4ED8', 'push': True,  'pull': True,  'status': 'Connected', 'last_sync': 'Active', 'api_endpoint': '', 'api_token': '', 'channel': ''},
-        'Collibra':          {'letter': 'Co',  'image': 'collibra.png',    'desc': 'Data catalog',       'color_bg': '#EBF5FF', 'color_txt': '#1E3A8A', 'push': True,  'pull': True,  'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
-        'Atlan':             {'letter': 'At',  'image': 'atlan.png',       'desc': 'Data catalog',       'color_bg': '#F3E8FF', 'color_txt': '#6B21A8', 'push': True,  'pull': False, 'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
-        'dbt Cloud':         {'letter': 'dbt', 'image': 'dbt cloud.png',   'desc': 'Transformation',     'color_bg': '#DCFCE7', 'color_txt': '#166534', 'push': False, 'pull': True,  'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
-        'Alation':           {'letter': 'Al',  'image': 'alation.png',     'desc': 'Data catalog',       'color_bg': '#FEE2E2', 'color_txt': '#991B1B', 'push': True,  'pull': True,  'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
-        'Slack':             {'letter': 'Sl',  'image': 'slack.png',       'desc': 'Notifications',      'color_bg': '#FEF3C7', 'color_txt': '#92400E', 'push': True,  'pull': False, 'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': '#data-governance'},
-        'Databricks Unity':  {'letter': 'DB',  'image': 'databricks.png',  'desc': 'Unity Catalog Tags',  'color_bg': '#FFF3E0', 'color_txt': '#E65100', 'push': True,  'pull': False, 'status': 'Not connected', 'last_sync': '', 'api_endpoint': '', 'api_token': '', 'channel': ''},
-    }
+    # Every connector starts disconnected — the card shows "Connect" until the user connects it
+    st.session_state.integration_connectors = {k: dict(v) for k, v in _CONNECTOR_DEFAULTS.items()}
 
 # Permanent Cache Initialization (Survives tab-switching unmounting)
 if 'perm_cache' not in st.session_state:
@@ -633,6 +627,280 @@ def _render_inline_review_term(idx):
             st.session_state.pop("_open_review_term", None)
             st.rerun()
 
+_AQ_UNDECIDED = ("Pending", "Conflict Detected")
+
+# Generated field → (label, icon, text colour, background)
+_AQ_FIELD_META = {
+    "term_name":      ("Business Term",  "🏷️", "#5B21B6", "#EDE9FE"),
+    "definition":     ("Description",    "📝", "#0F766E", "#CCFBF1"),
+    "classification": ("Classification", "🛡️", "#B45309", "#FEF3C7"),
+}
+
+# Result state → (chip label, chip text colour, chip background, row background)
+_AQ_STATE_STYLE = {
+    "changed":      ("Changed",          "#A32D2D", "#FCEBEB", "#FFF5F5"),
+    "duplicate":    ("Already in use",   "#A32D2D", "#FCEBEB", "#FFF5F5"),
+    "other_column": ("Different column", "#854F0B", "#FEF3C7", "#FFFBEB"),
+    "same":         ("Same",             "#3B6D11", "#EAF3DE", "#FFFFFF"),
+    "added":        ("New (was empty)",  "#185FA5", "#E6F1FB", "#FFFFFF"),
+}
+
+
+def _aq_field_pill(field_key):
+    label, icon, fg, bg = _AQ_FIELD_META[field_key]
+    return (f'<span style="display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;'
+            f'color:{fg};background:{bg};border-radius:999px;padding:3px 10px;">{icon} {label}</span>')
+
+
+def _aq_entry_fields(entries):
+    """Generated fields present in any of the entries, in display order."""
+    return [k for k in _AQ_FIELD_META if any(is_suggested(e, k) for e in entries)]
+
+
+def _aq_conflict_guidance(info):
+    existing = info["existing"]
+    if existing["match"] == "same_name":
+        text = (f"A business term can be active on only one column per table. Approving deactivates it on "
+                f"<strong>{_html.escape(existing['physical_term'] or '—')}</strong>. Reject to keep the current mapping.")
+    elif info["fields"]:
+        text = ("<strong>Approve</strong> or <strong>Merge</strong> replaces the highlighted values and creates a new version. "
+                "<strong>Reject</strong> keeps the approved version as it is.")
+    else:
+        text = "Nothing would change. <strong>Reject</strong> to clear it from the queue."
+    if info.get("nulled"):
+        text += (" <br/>⚪ Not generated: <strong>" + ", ".join(info["nulled"]) +
+                 "</strong> — stored as <code>null</code> in the Glossary Hub on approval.")
+    return text
+
+
+def _aq_conflict_comparison_html(info):
+    """Side-by-side table: approved value vs new suggestion for the generated fields, conflicts highlighted."""
+    existing = info["existing"]
+    approved_meta = " · ".join(p for p in (
+        f"v{existing['version']}" if existing.get("version") else "",
+        f"approved {existing['decided_on']}" if existing.get("decided_on") else "",
+    ) if p)
+
+    def _val(v):
+        if not str(v or "").strip():
+            return '<span style="color:#9CA3AF;font-style:italic;">empty</span>'
+        return f'<span style="color:#1F2937;">{_html.escape(str(v))}</span>'
+
+    th = "padding:8px 12px;text-align:left;font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #E5E7EB;"
+    td = "padding:9px 12px;font-size:13px;vertical-align:top;border-bottom:1px solid #F0F0EE;"
+    rows_html = ""
+    for r in info["rows"]:
+        chip, fg, bg, row_bg = _AQ_STATE_STYLE[r["state"]]
+        is_conflict = r["state"] in ("changed", "duplicate", "other_column")
+        marker = f"border-left:3px solid {fg};" if is_conflict else "border-left:3px solid transparent;"
+        tick = "⚠ " if is_conflict else "✓ " if r["state"] == "same" else ""
+        suggested = f"<strong>{_val(r['suggested'])}</strong>" if is_conflict else _val(r["suggested"])
+        rows_html += (
+            f'<tr style="background:{row_bg};">'
+            f'<td style="{td}{marker}font-weight:600;color:#374151;white-space:nowrap;">{r["field"]}</td>'
+            f'<td style="{td}">{_val(r["current"])}</td>'
+            f'<td style="{td}">{suggested}</td>'
+            f'<td style="{td}white-space:nowrap;"><span style="font-size:11px;font-weight:700;color:{fg};background:{bg};'
+            f'border-radius:999px;padding:3px 10px;">{tick}{chip}</span></td>'
+            '</tr>'
+        )
+    return (
+        '<div style="border:1px solid #E5E7EB;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.04);">'
+        '<table style="width:100%;border-collapse:collapse;">'
+        f'<thead><tr style="background:#F9FAFB;">'
+        f'<th style="{th}width:18%;">Field</th>'
+        f'<th style="{th}width:33%;">Currently approved'
+        + (f' <span style="text-transform:none;font-weight:500;color:#9CA3AF;">({approved_meta})</span>' if approved_meta else '') +
+        f'</th>'
+        f'<th style="{th}width:33%;">New suggestion</th>'
+        f'<th style="{th}width:16%;">Result</th>'
+        '</tr></thead>'
+        f'<tbody>{rows_html}</tbody></table>'
+        f'<div style="padding:9px 12px;font-size:12px;color:#4B5563;background:#F9FAFB;border-top:1px solid #E5E7EB;line-height:1.6;">'
+        f'ℹ️ {_aq_conflict_guidance(info)}</div>'
+        '</div>'
+    )
+
+
+def _aq_apply(action, entries, comment):
+    """Run approve / merge / reject over queue entries; returns (level, message) for display."""
+    done, failed = 0, []
+    for e in entries:
+        if action == "approve":
+            ok, msg = WorkflowManager.approve_term(e["term_id"], approver_comment=comment)
+        elif action == "merge":
+            ok, msg = WorkflowManager.approve_with_merge(e["term_id"], approver_comment=comment)
+        else:
+            ok, msg = WorkflowManager.reject_term(e["term_id"], approver_comment=comment)
+        if ok:
+            done += 1
+        else:
+            failed.append(f"**{e.get('physical_term') or e.get('term_name')}** — {msg}")
+    if done and action in ("approve", "merge"):
+        st.session_state["hub_approved_this_session"] = True
+    verb = {"approve": "approved", "merge": "merged", "reject": "rejected"}[action]
+    msg = f"{done} term(s) {verb}."
+    if failed:
+        return "warning", msg + "\n\nSkipped:\n" + "\n".join(f"- {f}" for f in failed)
+    return "success", msg
+
+
+def _render_approval_queue(entries):
+    """Approval Queue grouped table by table (like the Glossary Hub), with field-level conflict details."""
+    perms = get_current_user_permissions()
+    can_approve = perms.get("can_approve", False)
+    can_reject  = perms.get("can_reject", False)
+    ver = st.session_state.get("aq_editor_ver", 0)
+
+    if "_aq_result" in st.session_state:
+        level, msg = st.session_state.pop("_aq_result")
+        getattr(st, level)(msg)
+
+    # Same-named tables from different databases stay separate
+    by_table = {}
+    for e in entries:
+        key = (((e.get("table_name") or "").strip() or "—").upper(), _asset_location(e.get("table_qualified_name")))
+        by_table.setdefault(key, []).append(e)
+
+    selected, conflicts = [], []
+    for tbl, tbl_loc in sorted(by_table):
+        tbl_entries = by_table[(tbl, tbl_loc)]
+        tbl_src = next((e.get("source_type") for e in tbl_entries if e.get("source_type")), "")
+        active = sorted(
+            (e for e in tbl_entries if e.get("status") in _AQ_UNDECIDED),
+            key=lambda e: 0 if (e.get("term_type") or "").strip().lower() == "table" else 1,
+        )
+        decided = [e for e in tbl_entries if e.get("status") not in _AQ_UNDECIDED]
+        infos = {e["term_id"]: WorkflowManager.describe_conflict(e) for e in active if e.get("conflict_found")}
+        conflicts += [e for e in active if e["term_id"] in infos]
+
+        fields = _aq_entry_fields(tbl_entries)
+        not_generated = {_AQ_FIELD_META[k][0] for k in _AQ_FIELD_META if k not in fields}
+        _chip = "font-size:11.5px;font-weight:700;border-radius:999px;padding:3px 10px;"
+        chips = f'<span style="{_chip}color:#854F0B;background:#FAEEDA;">⏳ {len(active)} pending</span>'
+        if infos:
+            chips += f'<span style="{_chip}color:#A32D2D;background:#FCEBEB;">⚠ {len(infos)} conflict{"s" if len(infos) != 1 else ""}</span>'
+        if decided:
+            chips += f'<span style="{_chip}color:#4B5563;background:#E5E7EB;">✔ {len(decided)} decided</span>'
+        accent = "#E24B4A" if infos else "#C90000"
+        st.markdown(
+            "<div style='margin:22px 0 8px 0;padding:12px 16px;background:linear-gradient(90deg,#FFF5F5 0%,#FFFFFF 60%);"
+            f"border:1px solid #F1E3E3;border-left:5px solid {accent};border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.05);'>"
+            "<div style='display:flex;align-items:center;gap:10px;flex-wrap:wrap;'>"
+            f'<span class="material-symbols-outlined" style="font-size:22px;color:{accent};">table_chart</span>'
+            f'<span style="font-weight:800;font-size:15px;color:#1F2937;letter-spacing:.01em;">{_html.escape(tbl)}</span>'
+            + (f'<span style="font-size:12px;color:#6B7280;">📍 {_html.escape(tbl_loc)}</span>' if tbl_loc else '')
+            + (f'<span style="{_chip}color:#1D4ED8;background:#EFF6FF;">{_html.escape(tbl_src)}</span>' if tbl_src else '') +
+            f'<span style="flex:1;"></span><span style="display:flex;gap:6px;flex-wrap:wrap;">{chips}</span></div>'
+            "<div style='display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;'>"
+            "<span style='font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:.05em;margin-right:2px;'>Generated</span>"
+            + "".join(_aq_field_pill(f) for f in fields) +
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
+
+        if active:
+            df = pd.DataFrame([{
+                "Select":         False,
+                "Status":         "🔴 Conflict" if e["term_id"] in infos else "🟡 Pending",
+                "Conflict In":    ("⚠️ " + (", ".join(infos[e["term_id"]]["fields"]) or "Identical to approved"))
+                                  if e["term_id"] in infos else "—",
+                "Type":           e.get("term_type") or "Column",
+                "Physical Term":  e.get("physical_term") or e.get("related_column") or "",
+                "Business Term":  e.get("term_name", ""),
+                "Description":    e.get("definition", ""),
+                "Classification": e.get("classification", ""),
+                "Confidence (%)": int(e.get("confidence_score") or 0),
+                "Source":         e.get("source_type") or e.get("source", ""),
+                "term_id":        e["term_id"],
+            } for e in active])
+            # Only the information that was generated for this table
+            visible = [c for c in df.columns if c != "term_id" and c not in not_generated]
+            edited = st.data_editor(
+                df,
+                key=f"aq_ed_{_safe_mermaid_id(tbl + '_' + tbl_loc)}_v{ver}",
+                hide_index=True,
+                use_container_width=True,
+                column_order=visible,
+                disabled=[c for c in visible if c != "Select"],
+                column_config={
+                    "Select":         st.column_config.CheckboxColumn("Select", help="Tick to approve, merge or reject", default=False, width="small"),
+                    "Confidence (%)": st.column_config.ProgressColumn("Confidence (%)", format="%d%%", min_value=0, max_value=100),
+                    "Status":         st.column_config.TextColumn("Status"),
+                    "Conflict In":    st.column_config.TextColumn("Conflict In", help="Fields that differ from the currently approved version — see details below the table"),
+                },
+            )
+            selected += [e for e, sel in zip(active, edited["Select"].tolist()) if sel]
+
+            for e in active:
+                info = infos.get(e["term_id"])
+                if not info:
+                    continue
+                name = e.get("physical_term") or e.get("term_name") or ""
+                with st.expander(f"⚠️ {name}  —  {info['summary']}", expanded=len(infos) <= 3):
+                    if info["existing"]:
+                        st.markdown(_aq_conflict_comparison_html(info), unsafe_allow_html=True)
+                    else:
+                        st.caption(f"Matches existing term **{e.get('existing_term_name') or '—'}** ({info['summary']}).")
+        elif not decided:
+            st.caption("No terms in the current filter.")
+
+        if decided:
+            with st.expander(f"{len(decided)} decided term(s)", expanded=False):
+                _dec = pd.DataFrame([{
+                    "Physical Term":  e.get("physical_term") or "—",
+                    "Business Term":  e.get("term_name", ""),
+                    "Description":    e.get("definition", ""),
+                    "Classification": e.get("classification", ""),
+                    "Status":         e.get("status", ""),
+                    "Decided On":     (e.get("decision_date") or "")[:10],
+                    "Comment":        e.get("approver_comment", ""),
+                } for e in decided])
+                st.dataframe(_dec[[c for c in _dec.columns if c not in not_generated]],
+                             use_container_width=True, hide_index=True)
+
+    # ── Footer: actions on the ticked rows ──────────────────────────────────────
+    sel_conflicts = [e for e in selected if e.get("conflict_found")]
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='border:0.5px solid #E0DED8;border-radius:10px;padding:10px 16px;background:#fff;"
+        "display:flex;align-items:center;gap:14px;'>"
+        f"<span style='font-size:13px;font-weight:600;color:#374151;'>{len(selected)} selected</span>"
+        f"<span style='font-size:12px;color:#888780;'>{len(sel_conflicts)} with conflicts · {len(conflicts)} conflict(s) in view</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    comment = st.text_input("Approver comment (optional)", key="aq_bulk_comment",
+                            placeholder="Applied to every term you approve, merge or reject")
+    b1, b2, b3, b4 = st.columns(4)
+    action = None
+    with b1:
+        if st.button("✓ Approve Selected", key="aq_approve", type="primary", use_container_width=True,
+                     disabled=not selected or not can_approve,
+                     help="🔒 No permission" if not can_approve else None):
+            action = ("approve", selected)
+    with b2:
+        if st.button("🔀 Merge Selected", key="aq_merge", use_container_width=True,
+                     disabled=not sel_conflicts or not can_approve,
+                     help="🔒 No permission" if not can_approve else "Create a new version of the approved term (conflict rows only)"):
+            action = ("merge", sel_conflicts)
+    with b3:
+        if st.button("✕ Reject Selected", key="aq_reject", use_container_width=True,
+                     disabled=not selected or not can_reject,
+                     help="🔒 No permission" if not can_reject else None):
+            action = ("reject", selected)
+    with b4:
+        if st.button("✕ Reject All Conflicts", key="aq_reject_conflicts", use_container_width=True,
+                     disabled=not conflicts or not can_reject,
+                     help="🔒 No permission" if not can_reject else "Reject every conflict-flagged term in view"):
+            action = ("reject", conflicts)
+
+    if action:
+        st.session_state["_aq_result"] = _aq_apply(action[0], action[1], comment or f"Bulk {action[0]}")
+        st.session_state["aq_editor_ver"] = ver + 1
+        st.rerun()
+
+
 def render_review_tab():
     render_dashboard_header("Review & Approval")
     st.markdown(
@@ -788,8 +1056,13 @@ def render_review_tab():
     # ══════════════════════════════════════════════════════════════════════════
     with wf_tab1:
         # ── Header row with Clear Decided button ─────────────────────────────────
-        hdr_col, btn_col = st.columns([3, 1])
+        hdr_col, recheck_col, btn_col = st.columns([2, 1, 1])
         hdr_col.markdown("#### Approval Queue")
+        with recheck_col:
+            if st.button("🔄 Re-check Conflicts", use_container_width=True,
+                         help="Compare every pending term against the Glossary Hub again"):
+                WorkflowManager.recheck_all_conflicts()
+                st.rerun()
         with btn_col:
             if st.button("🗑️ Clear Decided", use_container_width=True,
                          help="Remove all Approved/Rejected entries from the queue. They remain in the Audit Log."):
@@ -820,7 +1093,7 @@ def render_review_tab():
                 )
             with search_col:
                 search_term = st.text_input(
-                    "Search Term Name", placeholder="Type to filter…", key="aq_search"
+                    "Search Term", placeholder="Business or physical term…", key="aq_search"
                 )
 
             if status_filter == "Active (Pending + Conflict)":
@@ -833,428 +1106,14 @@ def render_review_tab():
             if search_term:
                 filtered = [
                     e for e in filtered
-                    if search_term.lower() in e.get("term_name", "").lower()
+                    if search_term.lower() in (e.get("term_name") or "").lower()
+                    or search_term.lower() in (e.get("physical_term") or "").lower()
                 ]
 
             if not filtered:
                 st.info("No items match the current filter.")
             else:
-                # Split into Table-level and Column-level groups
-                # Use (e.get("term_type") or "Column") to safely handle None values
-                table_entries  = [e for e in filtered if (e.get("term_type") or "Column").strip().lower() == "table"]
-                column_entries = [e for e in filtered if (e.get("term_type") or "Column").strip().lower() != "table"]
-
-                # ── Helpers ───────────────────────────────────────────────
-                def _render_queue_entry(entry, idx):
-                    status      = entry.get("status", "Pending")
-                    term_id     = entry["term_id"]
-                    term_name   = _html.escape(entry.get("term_name", ""))
-                    definition  = _html.escape(entry.get("definition", ""))
-                    score       = entry.get("confidence_score", 0)
-                    ai_src      = entry.get("source", "")
-                    ai_label    = "User Submitted" if ai_src == "User" else "AI Suggested"
-                    ai_type     = "user" if ai_src == "User" else "ai"
-                    _pt = (entry.get("physical_term") or entry.get("related_column") or
-                           (entry.get("table_name") if (entry.get("term_type") or "").lower() == "table" else ""))
-                    phys_disp = _html.escape(_pt or "")
-                    table_disp = _html.escape(entry.get("table_name", "") or "")
-                    has_conflict = bool(entry.get("conflict_found"))
-                    suggested_raw  = entry.get("created_at") or entry.get("suggested_at") or ""
-                    suggested_date = suggested_raw[:10] if suggested_raw else "—"
-
-                    # Check audit log: if term already approved there, treat as conflict
-                    # _tab1_audit is pre-scoped to UC when UC is connected (closure variable)
-                    _audit = _tab1_audit
-                    _ename = (entry.get("term_name") or "").strip().lower()
-                    _ephys = (entry.get("physical_term") or entry.get("related_column") or "").strip().lower()
-                    _etbl  = (entry.get("table_name") or "").strip().lower()
-                    _entry_source = entry.get("source", "")
-
-                    # Case 1: same connector + same table + same column + SAME business term → Merge only
-                    audit_conflict = False
-                    _same_col_same_term = None
-                    if _ephys and _etbl:
-                        _same_col_same_term = next(
-                            (
-                                e for e in _audit
-                                if e.get("status") in ("Approved", "Approved (Merged)")
-                                and (e.get("physical_term") or "").strip().lower() == _ephys
-                                and (e.get("table_name") or "").strip().lower() == _etbl
-                                and (e.get("source") or "") == _entry_source
-                                and (e.get("term_name") or "").strip().lower() == _ename
-                            ),
-                            None,
-                        )
-                    if _same_col_same_term:
-                        audit_conflict = True
-
-                    # Case 2: same connector + same table + same column + DIFFERENT business term → all options
-                    _prior_diff = None
-                    audit_diff_term = False
-                    if not audit_conflict and _ephys and _etbl:
-                        _prior_diff = next(
-                            (
-                                e for e in _audit
-                                if e.get("status") in ("Approved", "Approved (Merged)")
-                                and (e.get("physical_term") or "").strip().lower() == _ephys
-                                and (e.get("table_name") or "").strip().lower() == _etbl
-                                and (e.get("source") or "") == _entry_source
-                                and (e.get("term_name") or "").strip().lower() != _ename
-                            ),
-                            None,
-                        )
-                        audit_diff_term = _prior_diff is not None
-
-                    audit_same_tbl_diff_col = False  # Not used as conflict anymore
-
-                    if audit_conflict:
-                        has_conflict = True
-                    elif audit_diff_term:
-                        has_conflict = True
-
-                    # Build badge / conflict snippets as plain strings (no multiline)
-                    ai_bs = ("background:#E6F1FB;color:#185FA5;border:0.5px solid #B5D4F4;"
-                             if ai_type == "ai" else
-                             "background:#EAF3DE;color:#3B6D11;border:0.5px solid #C0DD97;")
-                    conflict_tag = (
-                        (
-                            '<span style="display:inline-flex;align-items:center;gap:3px;font-size:11px;'
-                            'color:#A32D2D;background:#FCEBEB;border:0.5px solid #F7C1C1;'
-                            'border-radius:4px;padding:2px 6px;">&#9888; Already Approved — Use Merge</span>'
-                        ) if audit_conflict else (
-                            '<span style="display:inline-flex;align-items:center;gap:3px;font-size:11px;'
-                            'color:#854F0B;background:#FEF3C7;border:0.5px solid #FDE68A;'
-                            'border-radius:4px;padding:2px 6px;">&#9888; Different Business Term Already Approved</span>'
-                        ) if audit_diff_term else (
-                            '<span style="display:inline-flex;align-items:center;gap:3px;font-size:11px;'
-                            'color:#A32D2D;background:#FCEBEB;border:0.5px solid #F7C1C1;'
-                            'border-radius:4px;padding:2px 6px;">&#9888; Conflict Detected</span>'
-                        )
-                    ) if has_conflict else ""
-
-                    # Card status badge — dynamic based on conflict state
-                    if audit_conflict:
-                        status_badge_style = "background:#FCEBEB;color:#A32D2D;border:0.5px solid #F7C1C1;"
-                        status_badge_text  = "Conflict — Use Merge"
-                        card_border        = "border:1px solid #F7C1C1;"
-                    elif audit_diff_term:
-                        status_badge_style = "background:#FEF3C7;color:#854F0B;border:0.5px solid #FDE68A;"
-                        status_badge_text  = "Conflict — Diff Term"
-                        card_border        = "border:1px solid #FDE68A;"
-                    elif has_conflict:
-                        status_badge_style = "background:#FCEBEB;color:#A32D2D;border:0.5px solid #F7C1C1;"
-                        status_badge_text  = "Conflict Detected"
-                        card_border        = "border:1px solid #F7C1C1;"
-                    else:
-                        status_badge_style = "background:#FAEEDA;color:#854F0B;border:0.5px solid #FAC775;"
-                        status_badge_text  = "Pending"
-                        card_border        = "border:0.5px solid #E0DED8;"
-
-                    # Full card — single st.markdown call, HTML built by concatenation (no newlines/indentation issues)
-                    card = (
-                        f'<div style="{card_border}border-radius:10px;padding:14px 16px;background:#fff;margin-bottom:4px;">'
-                          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">'
-                            '<div style="flex:1;min-width:0;">'
-                              f'<div style="font-size:13px;font-weight:600;color:#1A1A18;margin-bottom:4px;">{term_name}</div>'
-                              f'<div style="font-size:12px;color:#6B6B67;line-height:1.55;margin-bottom:8px;">{definition}</div>'
-                              '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
-                                f'<span style="font-size:11px;color:#888780;">'
-                                  '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#378ADD;margin-right:4px;vertical-align:middle;"></span>'
-                                  f'Physical Term: <strong>{phys_disp}</strong>'
-                                '</span>'
-                                + (f'<span style="font-size:11px;color:#888780;">'
-                                  '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#10B981;margin-right:4px;vertical-align:middle;"></span>'
-                                  f'Table: <strong>{table_disp}</strong>'
-                                '</span>' if table_disp else '') +
-                                f'{conflict_tag}'
-                              '</div>'
-                            '</div>'
-                            '<div style="flex-shrink:0;min-width:140px;text-align:right;">'
-                              '<div style="display:flex;align-items:center;gap:4px;justify-content:flex-end;flex-wrap:wrap;margin-bottom:5px;">'
-                                f'<span style="font-size:10px;font-weight:500;padding:2px 7px;border-radius:4px;{status_badge_style}">{status_badge_text}</span>'
-                                f'<span style="font-size:10px;font-weight:500;padding:2px 7px;border-radius:4px;{ai_bs}">{ai_label}</span>'
-                                f'<span style="font-size:11px;font-weight:700;color:#2C2C2A;">{score}%</span>'
-                              '</div>'
-                              f'<div style="font-size:10px;color:#888780;line-height:1.5;">Suggested on<br/>{suggested_date}</div>'
-                            '</div>'
-                          '</div>'
-                        '</div>'
-                    )
-
-                    cb_col, card_col = st.columns([0.4, 5.6])
-                    with cb_col:
-                        st.write("")
-                        st.checkbox("select", key=f"sel_{term_id}", label_visibility="collapsed")
-                    with card_col:
-                        st.markdown(card, unsafe_allow_html=True)
-
-                        # RBAC permission check
-                        _user_perms = get_current_user_permissions()
-                        _can_approve = _user_perms.get("can_approve", False)
-                        _can_reject = _user_perms.get("can_reject", False)
-
-                        if status in ("Pending", "Conflict Detected"):
-                            if audit_conflict:
-                                # Same connector+table+column+term: ✓ disabled, ✕ hidden, 🔀 Merge visible
-                                _, _, ba, bm, bmore = st.columns([2, 2, 1, 1, 1])
-                            elif audit_diff_term:
-                                # Same connector+table+column but diff term: all three buttons visible
-                                _, _, ba, br, bm, bmerge = st.columns([1.5, 1.5, 1, 1, 1, 1])
-                            else:
-                                # Normal: approve/reject + popover with merge
-                                _, _, ba, br, bm = st.columns([2, 2, 1, 1, 1])
-
-                            if audit_diff_term and not audit_conflict:
-                                st.caption(
-                                    f"⚠️ Physical term **{_ephys.upper()}** in table **{_etbl}** "
-                                    f"already has an approved business term "
-                                    f"**'{_prior_diff.get('term_name', '')}'**. "
-                                    "Approving will deactivate the old record and create a new active version."
-                                )
-                            with ba:
-                                if st.button("✓", key=f"approve_{term_id}",
-                                             use_container_width=True, type="primary",
-                                             disabled=(audit_conflict or not _can_approve),
-                                             help="🔒 No permission to approve" if not _can_approve else None):
-                                    ok, msg = WorkflowManager.approve_term(
-                                        term_id,
-                                        approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                    )
-                                    if ok:
-                                        st.session_state["hub_approved_this_session"] = True
-                                        st.success(msg)
-                                    else:
-                                        st.error(msg)
-                                    st.rerun()
-                            if audit_conflict:
-                                with bm:
-                                    if st.button("🔀 Merge", key=f"merge_{term_id}",
-                                                 use_container_width=True, type="primary",
-                                                 disabled=not _can_approve,
-                                                 help="🔒 No permission to merge" if not _can_approve else "Term already approved — merge to create new version"):
-                                        ok, msg = WorkflowManager.approve_with_merge(
-                                            term_id,
-                                            approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                        )
-                                        if ok:
-                                            st.session_state["hub_approved_this_session"] = True
-                                            st.success(msg)
-                                        else:
-                                            st.error(msg)
-                                        st.rerun()
-                                with bmore:
-                                    with st.expander("···"):
-                                        st.markdown("**Additional actions**")
-                                        st.text_input(
-                                            "Comment",
-                                            placeholder="Approver comment…",
-                                            key=f"comment_{term_id}",
-                                            label_visibility="collapsed",
-                                        )
-                                        st.warning("⚠️ This term was already approved. Approve (✓) and Reject (✕) are disabled. Use 🔀 Merge to create a new version.")
-                            elif audit_diff_term:
-                                # All three buttons visible: Approve, Reject, Merge
-                                with br:
-                                    if st.button("✕", key=f"reject_{term_id}",
-                                                 use_container_width=True,
-                                                 disabled=not _can_reject,
-                                                 help="🔒 No permission to reject" if not _can_reject else None):
-                                        ok, msg = WorkflowManager.reject_term(
-                                            term_id,
-                                            approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                        )
-                                        if ok:
-                                            st.session_state["_email_notification"] = (True, "Term rejected.")
-                                        else:
-                                            st.error(msg)
-                                        st.rerun()
-                                with bm:
-                                    if st.button("🔀", key=f"merge_{term_id}",
-                                                 use_container_width=True,
-                                                 disabled=not _can_approve,
-                                                 help="🔒 No permission to merge" if not _can_approve else "Merge with existing approved term"):
-                                        ok, msg = WorkflowManager.approve_with_merge(
-                                            term_id,
-                                            approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                        )
-                                        if ok:
-                                            st.session_state["hub_approved_this_session"] = True
-                                            st.success(msg)
-                                        else:
-                                            st.error(msg)
-                                        st.rerun()
-                                with bmerge:
-                                    with st.expander("···"):
-                                        st.text_input(
-                                            "Comment",
-                                            placeholder="Approver comment…",
-                                            key=f"comment_{term_id}",
-                                            label_visibility="collapsed",
-                                        )
-                            else:
-                                with br:
-                                    if st.button("✕", key=f"reject_{term_id}",
-                                                 use_container_width=True,
-                                                 disabled=not _can_reject,
-                                                 help="🔒 No permission to reject" if not _can_reject else None):
-                                        ok, msg = WorkflowManager.reject_term(
-                                            term_id,
-                                            approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                        )
-                                        if ok:
-                                            st.session_state["_email_notification"] = (True, "Term rejected.")
-                                        else:
-                                            st.error(msg)
-                                        st.rerun()
-                                with bm:
-                                    with st.expander("···"):
-                                        st.markdown("**Additional actions**")
-                                        st.text_input(
-                                            "Comment",
-                                            placeholder="Approver comment…",
-                                            key=f"comment_{term_id}",
-                                            label_visibility="collapsed",
-                                        )
-                                        st.divider()
-                                        if not entry.get("conflict_checked"):
-                                            if st.button("🔍 Check Conflict",
-                                                         key=f"conflict_{term_id}",
-                                                         use_container_width=True):
-                                                cf, mt = WorkflowManager.run_conflict_check(term_id)
-                                                st.success("No conflict found.") if not cf else st.warning(f"Conflict: {mt}")
-                                                st.rerun()
-                                        else:
-                                            st.caption("⚠️ Conflict Found" if entry.get("conflict_found")
-                                                       else "✅ No Conflict")
-                                        st.divider()
-                                        merge_disabled = not entry.get("conflict_found", False) or not _can_approve
-                                        if st.button("🔀 Merge", key=f"merge_{term_id}",
-                                                     use_container_width=True, disabled=merge_disabled,
-                                                     help="🔒 No permission to merge" if not _can_approve else "Only when conflict detected"):
-                                            ok, msg = WorkflowManager.approve_with_merge(
-                                                term_id,
-                                                approver_comment=st.session_state.get(f"comment_{term_id}", ""),
-                                            )
-                                            if ok:
-                                                st.session_state["hub_approved_this_session"] = True
-                                                st.success(msg)
-                                            else:
-                                                st.error(msg)
-                                            st.rerun()
-
-                        elif status in ("Approved", "Approved (Merged)", "Rejected"):
-                            dec_date = (entry.get('decision_date') or '')[:10]
-                            comment  = entry.get('approver_comment', '')
-                            cap = f"{status} · {dec_date}"
-                            if comment:
-                                cap += f" · {comment}"
-                            st.caption(cap)
-
-                    st.markdown("<hr style='margin:0 0 4px 0;border:none;border-top:0.5px solid #EBEBEB;'>",
-                                unsafe_allow_html=True)
-
-                def _render_decided_entry(entry, idx):
-                    """Render an approved/rejected entry as a collapsed expander."""
-                    status    = entry.get("status", "")
-                    term_name = entry.get("term_name", "")
-                    dec_date  = (entry.get("decision_date") or "")[:10]
-                    icon      = "✅" if "Approved" in status else "✖"
-                    label     = f"{icon} {term_name}  —  {status}  ({dec_date})"
-                    with st.expander(label, expanded=False):
-                        if entry.get("physical_term"):
-                            st.markdown(f"**Physical Term:** {entry.get('physical_term')}")
-                        st.markdown(f"**Definition:** {entry.get('definition', '')}")
-                        if entry.get("table_name"):
-                            st.markdown(f"**Table:** {entry.get('table_name')}")
-                        st.markdown(f"**Source:** {entry.get('source', '')}  |  **Confidence:** {entry.get('confidence_score', '')}%")
-                        if entry.get("approver_comment"):
-                            st.markdown(f"**Comment:** _{entry['approver_comment']}_")
-
-                tbl_active   = [e for e in table_entries  if e.get("status") in ("Pending", "Conflict Detected")]
-                tbl_decided  = [e for e in table_entries  if e.get("status") not in ("Pending", "Conflict Detected")]
-                col_active   = [e for e in column_entries if e.get("status") in ("Pending", "Conflict Detected")]
-                col_decided  = [e for e in column_entries if e.get("status") not in ("Pending", "Conflict Detected")]
-
-                # ── Table-Level Terms (collapsible) ───────────────────────────
-                with st.expander(f"🗂️  Table-Level Terms  ·  {len(tbl_active)} pending", expanded=True):
-                    if tbl_active:
-                        for idx, entry in enumerate(tbl_active):
-                            _render_queue_entry(entry, idx)
-                    elif not tbl_decided:
-                        st.caption("No table-level terms in the current filter.")
-                    for idx, entry in enumerate(tbl_decided):
-                        _render_decided_entry(entry, idx)
-
-                # ── Column-Level Terms (collapsible) ──────────────────────────
-                with st.expander(f"📄  Column-Level Terms  ·  {len(col_active)} pending", expanded=True):
-                    if col_active:
-                        for idx, entry in enumerate(col_active):
-                            _render_queue_entry(entry, len(tbl_active) + idx)
-                    elif not col_decided:
-                        st.caption("No column-level terms in the current filter.")
-                    for idx, entry in enumerate(col_decided):
-                        _render_decided_entry(entry, len(tbl_decided) + idx)
-
-                # ── Footer: bulk actions ──────────────────────────────────────
-                all_active = tbl_active + col_active
-                n_sel = sum(
-                    1 for e in all_active
-                    if st.session_state.get(f"sel_{e['term_id']}", False)
-                )
-                st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
-                st.markdown(
-                    "<style>div[data-testid='stButton'] button[kind='primaryFormSubmit'],"
-                    "div[data-testid='stButton'] button[kind='primary'] {color:#ffffff !important;}</style>",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    "<div style='border:0.5px solid #E0DED8;border-radius:10px;"
-                    "padding:10px 16px;background:#fff;display:flex;"
-                    "align-items:center;justify-content:space-between;'>"
-                    f"<span style='font-size:12px;color:#888780;'>"
-                    f"{n_sel} item{'s' if n_sel != 1 else ''} selected</span>"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-                _fc1, _fc2, _fc3 = st.columns([2, 2, 2])
-                _bulk_perms = get_current_user_permissions()
-                with _fc1:
-                    if st.button("✕ Reject Unconfirmed", key="bulk_reject_unconfirmed",
-                                 use_container_width=True,
-                                 disabled=not _bulk_perms.get("can_reject", False),
-                                 help="🔒 No permission" if not _bulk_perms.get("can_reject") else "Reject all conflict-flagged pending terms"):
-                        for e in all_active:
-                            if e.get("conflict_found"):
-                                WorkflowManager.reject_term(
-                                    e["term_id"],
-                                    approver_comment="Bulk: rejected unconfirmed",
-                                )
-                        st.rerun()
-                with _fc2:
-                    if st.button("✓ Approve Selected", key="bulk_approve",
-                                 use_container_width=True, type="primary",
-                                 disabled=(n_sel == 0 or not _bulk_perms.get("can_approve", False)),
-                                 help="🔒 No permission" if not _bulk_perms.get("can_approve") else None):
-                        for e in all_active:
-                            if st.session_state.get(f"sel_{e['term_id']}", False):
-                                WorkflowManager.approve_term(
-                                    e["term_id"],
-                                    approver_comment="Bulk approve",
-                                )
-                        st.session_state["hub_approved_this_session"] = True
-                        st.rerun()
-                with _fc3:
-                    if st.button("✕ Reject Selected", key="bulk_reject",
-                                 use_container_width=True,
-                                 disabled=(n_sel == 0 or not _bulk_perms.get("can_reject", False)),
-                                 help="🔒 No permission" if not _bulk_perms.get("can_reject") else None):
-                        for e in all_active:
-                            if st.session_state.get(f"sel_{e['term_id']}", False):
-                                WorkflowManager.reject_term(
-                                    e["term_id"],
-                                    approver_comment="Bulk reject",
-                                )
-                        st.rerun()
+                _render_approval_queue(filtered)
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 3 — Audit Log
@@ -1756,6 +1615,17 @@ def render_search_tab():
                     if r.status_code == 200:
                         raw_results = r.json().get('value', [])
                         filtered_results = [res for res in raw_results if res.get('name', '').lower().startswith(search_query.lower())]
+                        if not st.session_state.get('purview_collections'):
+                            try:
+                                st.session_state.purview_collections = connector.get_collections() or []
+                            except Exception:
+                                pass
+                        # Apply the Collection filter (the search request only filters by source type)
+                        _sel_coll = st.session_state.perm_cache.get('search_collection', 'All Collections')
+                        if _sel_coll != 'All Collections':
+                            _coll_ids = {c.get('name') for c in st.session_state.get('purview_collections', [])
+                                         if (c.get('friendlyName') or c.get('name')) == _sel_coll}
+                            filtered_results = [res for res in filtered_results if res.get('collectionId') in _coll_ids]
                         st.session_state.purview_search_results = filtered_results
                         if not filtered_results:
                             st.session_state.purview_search_no_results = True
@@ -1770,6 +1640,9 @@ def render_search_tab():
             st.markdown("### Search Results")
             results_df = pd.DataFrame(st.session_state.purview_search_results)
             saved_ids = st.session_state.perm_cache.get('selected_table_ids', [])
+            # Collection names as Purview shows them — tells apart tables that share a name
+            _coll_names = {c.get('name'): (c.get('friendlyName') or c.get('name'))
+                           for c in st.session_state.get('purview_collections', [])}
 
             # Use individual checkboxes for clear single-click selection
             current_selected = []
@@ -1795,9 +1668,12 @@ def render_search_tab():
                                 st.session_state.perm_cache['selected_table_ids'] = updated_ids
                                 st.rerun()
                         with col_name:
-                            st.markdown(f"**{row.get('name', '')}**")
+                            _cid = row.get('collectionId')
+                            _cid = _cid if isinstance(_cid, str) else ""
+                            _coll = _coll_names.get(_cid, _cid)
+                            st.markdown(f"**{row.get('name', '')}**" + (f"  \n:gray[Collection: {_coll}]" if _coll else ""))
                         with col_type:
-                            st.caption(row.get('entityType', ''))
+                            st.caption(_source_type_label(row.get('entityType', '')))
                         if checked:
                             current_selected.append(qname)
 
@@ -1820,6 +1696,7 @@ def render_search_tab():
                         "columns": list(col_data.keys()),
                         "column_guids": col_data,
                         "source": "purview",
+                        "source_type": _source_type_label(table.get('entityType')),
                     }
                 st.markdown(
                     '<div class="asset-fetch-success">Schemas fetched successfully.</div>',
@@ -1943,6 +1820,7 @@ def render_search_tab():
                             "columns": cols,
                             "column_guids": {c: c for c in cols},  # identity map — no Purview GUIDs
                             "source": "databricks",
+                            "source_type": "Databricks",
                             "catalog": row["catalog_name"],
                             "schema": row["schema_name"],
                         }
@@ -1955,7 +1833,7 @@ def render_search_tab():
     if st.session_state.get('tables_metadata'):
         st.markdown("### Detected Schemas")
         for tid, meta in st.session_state.tables_metadata.items():
-            src_badge = "Databricks" if meta.get("source") == "databricks" else "Purview"
+            src_badge = meta.get("source_type") or ("Databricks" if meta.get("source") == "databricks" else "Purview")
             with st.expander(f"{src_badge}  {meta['name']}  —  {len(meta['columns'])} columns", expanded=True):
                 for cname in meta['columns']:
                     st.markdown(f"`{cname}`")
@@ -1976,6 +1854,45 @@ def render_search_tab():
 
         if has_history:
             st.info("Note: These assets already have approved records in the Master Store.")
+
+# "Information to Generate" option → (queue field, AI response keys that carry it)
+_GEN_OPTION_FIELDS = {
+    "Business Term":       ("term_name",      ("name",)),
+    "Business Definition": ("definition",     ("description", "definition")),
+    "Classifications":     ("classification", ("classification", "tags", "governance_tags")),
+}
+
+# Purview entity type → the "Source Type" name used in Asset Search
+_SOURCE_TYPE_LABELS = {
+    "azure_sql_table": "Azure SQL", "snowflake_table": "Snowflake", "oracle_table": "Oracle",
+    "databricks_table": "Databricks", "fabric_lakehouse_table": "Fabric", "Table": "Generic Table",
+}
+
+
+def _source_type_label(entity_type):
+    return _SOURCE_TYPE_LABELS.get(entity_type or "", entity_type or "")
+
+
+def _asset_location(qualified_name):
+    """Readable 'DATABASE.SCHEMA' part of a Purview qualified name, to tell same-named tables apart."""
+    qn = str(qualified_name or "")
+    m = re.search(r"/databases/([^/]+)/schemas/([^/]+)/tables/", qn)
+    if m:
+        return f"{m.group(1)}.{m.group(2)}"
+    parts = [p for p in qn.split("://", 1)[-1].split("/") if p]
+    return ".".join(parts[1:-1]) if len(parts) > 2 else ""
+
+
+def _cell_str(row, *cols):
+    """First non-empty, non-NaN value among the given columns of a row, as a stripped string."""
+    for c in cols:
+        v = row.get(c)
+        if v is None or pd.isna(v):
+            continue
+        s = str(v).strip()
+        if s:
+            return s
+    return ""
 
 def render_glossary_tab():
     render_dashboard_header("Glossary AI")
@@ -2039,7 +1956,15 @@ def render_glossary_tab():
 
                 for tid, meta in st.session_state.tables_metadata.items():
                     suggestions = generate_glossary_suggestions(meta['name'], meta['columns'], industry=industry, business_context=st.session_state.get('biz_ctx', ""), selected_options=options, purview_classifications=_purview_cls_types)
+                    # Drop columns the AI invented — only the table's real schema can be registered back
+                    _real_cols = {str(c).strip().lower(): c for c in meta['columns']}
+                    suggestions = [
+                        s for s in suggestions
+                        if s.get('type') == 'Table' or str(s.get('related_column', '')).strip().lower() in _real_cols
+                    ]
                     for s in suggestions:
+                        if s.get('type') != 'Table':
+                            s['related_column'] = _real_cols[str(s['related_column']).strip().lower()]
                         s['table_guid'] = tid
                         s['table_name'] = meta['name']
                         # Use raw column name, but provide the table name if it's a table
@@ -2053,12 +1978,23 @@ def render_glossary_tab():
                             s['entity_guid'] = meta['column_guids'].get(orig_col)
                         else:
                             s['entity_guid'] = tid
+                        # Keep only the information the user chose to generate
+                        if 'definition' in s and 'description' not in s:
+                            s['description'] = s.pop('definition')
+                        for _opt, (_field, _keys) in _GEN_OPTION_FIELDS.items():
+                            if _opt not in options:
+                                for _k in _keys:
+                                    s.pop(_k, None)
                     all_s.extend(suggestions)
                 
-                # Apply Automated Governance Rules (Deterministic Regex/Keyword matching)
-                all_s = GovernanceEngine.process_suggestions(all_s)
+                # Apply Automated Governance Rules (Deterministic Regex/Keyword matching) — classification only
+                if "Classifications" in options:
+                    all_s = GovernanceEngine.process_suggestions(all_s)
                 
                 st.session_state.glossary_suggestions = all_s
+                st.session_state.glossary_generated_fields = [
+                    _field for _opt, (_field, _) in _GEN_OPTION_FIELDS.items() if _opt in options
+                ]
                 df = pd.DataFrame(all_s)
                 if not df.empty:
                     # New Learning Loop Columns
@@ -2076,6 +2012,11 @@ def render_glossary_tab():
                     
                     # Initialize Select column
                     st.session_state.glossary_df['Select'] = False
+                    # A selected field always gets a column, even if the AI left it out
+                    for _opt, _col in (("Business Term", "Business Term"), ("Business Definition", "Description"),
+                                       ("Classifications", "Classification")):
+                        if _opt in options and _col not in st.session_state.glossary_df.columns:
+                            st.session_state.glossary_df[_col] = ""
                     
                     # Reorder according to request: Select first, Confidence last, others in between.
                     # Explicitly exclude the internal GUID columns as requested in the image.
@@ -2158,7 +2099,7 @@ def render_glossary_tab():
                         if edited.at[i, 'Status'] == 'Accepted':
                             edited.at[i, 'Status'] = 'Pending'
                         if prev_state.get(i, False) and not row['Select']:
-                            term_name = row.get('Business Term') or row.get('Original Name') or ''
+                            term_name = _cell_str(row, 'Business Term', 'Original Name', 'Physical Term', 'related_column')
                             if term_name:
                                 WorkflowManager.remove_from_queue_by_name(term_name)
                 merged_df.loc[tbl_idx] = edited
@@ -2204,14 +2145,19 @@ def render_glossary_tab():
                 WorkflowManager.clear_ai_suggested_terms(source=_clear_src)
                 queued_count = 0
                 for _, row in selected_df.iterrows():
-                    term_name     = row.get("Business Term") or row.get("Original Name") or ""
-                    definition    = row.get("Description") or row.get("Definition / Description") or ""
+                    physical_term = _cell_str(row, "Physical Term", "related_column")
+                    biz_term      = _cell_str(row, "Business Term", "Original Name")
+                    definition    = _cell_str(row, "Description", "Definition / Description")
                     _raw_score    = row.get("Confidence (%)", 80)
                     score         = int(_raw_score) if _raw_score is not None and str(_raw_score) not in ('nan', '') else 80
-                    term_type     = str(row.get("Type", "Column") or "Column")
-                    physical_term = str(row.get("Physical Term") or row.get("related_column") or "")
-                    _raw_cls      = row.get("Classification", "")
-                    classification = str(_raw_cls) if _raw_cls is not None and str(_raw_cls) != 'nan' else ""
+                    term_type     = _cell_str(row, "Type") or "Column"
+                    classification = _cell_str(row, "Classification")
+                    # Only the fields chosen under "Information to Generate"; the rest are stored as NULL
+                    _suggested_fields = st.session_state.get("glossary_generated_fields") or [
+                        f for f, c in (("term_name", "Business Term"), ("definition", "Description"),
+                                       ("classification", "Classification")) if c in selected_df.columns]
+                    # Business Term is absent when only e.g. Classifications were generated — fall back to the physical name
+                    term_name     = biz_term or physical_term
                     if term_name:
                         # Detect whether the term came from a Databricks Unity Catalog table
                         _tbl_meta = st.session_state.get('tables_metadata', {}).get(str(row.get("table_guid", "")), {})
@@ -2225,6 +2171,11 @@ def render_glossary_tab():
                             term_type        = term_type,
                             physical_term    = physical_term,
                             classification   = classification,
+                            suggested_fields = _suggested_fields,
+                            source_type          = _tbl_meta.get("source_type", ""),
+                            table_qualified_name = _tbl_meta.get("qualifiedName", ""),
+                            # tables_metadata is keyed by the Purview table entity GUID
+                            table_entity_guid    = str(row.get("table_guid", "") or "") if _tbl_meta.get("source") == "purview" else "",
                         )
                         queued_count += 1
                 if queued_count:
@@ -2233,6 +2184,241 @@ def render_glossary_tab():
                     st.rerun()
                 else:
                     st.warning("No valid terms found in selection.")
+
+_HUB_INFO_OPTIONS = ["Business Term", "Description", "Classification"]
+_HUB_INFO_ICONS   = {"Business Term": "🏷️", "Description": "📝", "Classification": "🛡️"}
+
+
+def _hub_info_selector():
+    """'Information to Display & Register' picker for the Glossary Hub; returns the selected fields."""
+    st.markdown(
+        "<div style='font-size:12px;font-weight:700;color:#6B7280;text-transform:uppercase;"
+        "letter-spacing:.05em;margin:2px 0 4px 0;'>Information to Display &amp; Register</div>",
+        unsafe_allow_html=True,
+    )
+    picked = st.pills(
+        "Information to Display & Register",
+        _HUB_INFO_OPTIONS,
+        selection_mode="multi",
+        default=_HUB_INFO_OPTIONS,
+        format_func=lambda o: f"{_HUB_INFO_ICONS[o]} {o}",
+        key="hub_info_fields",
+        label_visibility="collapsed",
+    ) or []
+    if not picked:
+        st.caption("Select at least one field to display and register.")
+    return [o for o in _HUB_INFO_OPTIONS if o in picked]
+
+
+def _hub_register_help(count, platform_name, info_fields, can_register):
+    """Tooltip for the Register button — the details stay off the button itself."""
+    if not can_register:
+        return "🔒 No permission"
+    if not platform_name:
+        return "No integration connected — go to Integrations & API"
+    if not info_fields:
+        return "Select the information to register"
+    if not count:
+        return "Select at least 1 term to register"
+    return f"Register {count} term(s) to {platform_name}: " + ", ".join(info_fields)
+
+
+def _hub_prepare_df(df):
+    """Show the Asset Search source type in 'Source' and keep the table location for grouping."""
+    df = df.rename(columns={"Source Type": "source_type"})
+    if "source_type" in df.columns:
+        st_vals = df["source_type"].fillna("").astype(str).str.strip()
+        df["Source"] = st_vals.where(st_vals != "", df["Source"] if "Source" in df.columns else "")
+    return df
+
+
+def _hub_table_groups(df):
+    """Group label per row: table name, plus database/schema when known (same-named tables stay apart)."""
+    names = df["table_name"].fillna("—").apply(lambda x: str(x) if x else "—")
+    if "table_qualified_name" not in df.columns:
+        return names
+    locs = df["table_qualified_name"].apply(_asset_location)
+    return [f"{n}  ·  📍 {l}" if l else n for n, l in zip(names, locs)]
+
+
+def _resolve_purview_target(connector, row, cache):
+    """
+    Purview entity GUID a Glossary Hub row registers to: the column, or the table itself
+    for table-level terms. Raises with a readable reason when it can't be found, so a
+    failed lookup is never reported as registered.
+    """
+    physical   = _cell_str(row, "Physical Term", "Original Name", "physical_term")
+    table_name = _cell_str(row, "table_name") or re.sub(r"^workflow_", "", _cell_str(row, "table_guid"), flags=re.I)
+    qualified  = _cell_str(row, "table_qualified_name")
+
+    def _columns(table_guid):
+        if ("cols", table_guid) not in cache:
+            cache[("cols", table_guid)] = connector.get_table_columns_with_guids(table_guid) or {}
+        return cache[("cols", table_guid)]
+
+    is_table_row = _cell_str(row, "Type").lower() == "table" or physical.upper() == table_name.upper()
+    resolved_key = ("resolved", table_name.upper(), qualified)
+    table_guid = _cell_str(row, "table_entity_guid")
+    if not table_guid:
+        if ("search", table_name.upper()) not in cache:
+            cache[("search", table_name.upper())] = connector.find_tables_by_name(table_name)
+        candidates = cache[("search", table_name.upper())]
+        if qualified:
+            candidates = [t for t in candidates if t["qualifiedName"] == qualified]
+        if not candidates:
+            raise Exception(f"table {table_name} was not found in Purview")
+        if len(candidates) > 1:
+            locs = ", ".join(_asset_location(t["qualifiedName"]) or t["qualifiedName"] for t in candidates)
+            if is_table_row:
+                # Use the table this batch's columns resolved to, when that is a single one
+                seen = cache.get(resolved_key, set())
+                candidates = [t for t in candidates if t["id"] in seen] if len(seen) == 1 else candidates
+            else:
+                # Same-named tables in different databases: keep the one that has this column
+                with_col = [t for t in candidates
+                            if any(n.strip().lower() == physical.lower() for n in _columns(t["id"]))]
+                if not with_col:
+                    raise Exception(f"column {physical} was not found on any of the {len(candidates)} "
+                                    f"tables named {table_name} in Purview ({locs})")
+                candidates = with_col
+            if len(candidates) > 1:
+                raise Exception(f"{len(candidates)} tables named {table_name} exist in Purview ({locs}). "
+                                "Select the table in Asset Search and send it through approval again.")
+        table_guid = candidates[0]["id"]
+    if not is_table_row:
+        cache.setdefault(resolved_key, set()).add(table_guid)
+
+    if is_table_row:
+        return table_guid
+    col_guid = next((g for n, g in _columns(table_guid).items() if n.strip().lower() == physical.lower()), None)
+    if not col_guid:
+        raise Exception(f"column {physical} was not found on table {table_name} in Purview")
+    return col_guid
+
+
+def _register_rows_to_purview(rows_df, info_fields, selected_guid=None):
+    """
+    Register Glossary Hub rows to Microsoft Purview, sending only `info_fields`:
+      Business Term  → create/update the glossary term and assign it to the column
+      Description    → term definition when Business Term is sent, otherwise the column's description
+      Classification → classification on the column
+    Returns (ok: bool, message_html: str).
+    """
+    creds    = st.session_state.get("connector_creds", {})
+    _sec_pur = st.secrets.get("purview", {})
+    account_name  = creds.get("purview_account_name") or _sec_pur.get("account_name", "")
+    tenant_id     = creds.get("purview_tenant_id") or _sec_pur.get("tenant_id", "")
+    client_id     = creds.get("purview_client_id") or _sec_pur.get("client_id", "")
+    client_secret = creds.get("purview_client_secret") or _sec_pur.get("client_secret", "")
+
+    if not all([account_name, tenant_id, client_id, client_secret]):
+        return False, "Failed to connect to Microsoft Purview API: Purview connection credentials missing."
+    try:
+        connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
+        ok, auth_msg = connector.authenticate()
+        if not ok:
+            return False, f"Failed to connect to Microsoft Purview API: {auth_msg}"
+        glossaries = connector.get_glossaries()
+    except Exception as e:
+        return False, f"Failed to connect to Microsoft Purview API: {e}"
+    if isinstance(glossaries, list) and glossaries:
+        glossary_guid, glossary_name = glossaries[0].get("guid", ""), glossaries[0].get("name", "")
+    elif isinstance(glossaries, dict):
+        glossary_guid, glossary_name = glossaries.get("guid", ""), glossaries.get("name", "")
+    else:
+        glossary_guid, glossary_name = "", ""
+    if not glossary_guid:
+        return False, f"Connected to Purview account '{account_name}', but no active Glossary was found in Purview."
+
+    send_term = "Business Term" in info_fields
+    send_desc = "Description" in info_fields
+    send_cls  = "Classification" in info_fields
+    registered, skipped, errors = 0, [], []
+    counts = {"Business Term": 0, "Description": 0, "Classification": 0}
+
+    lookup_cache = {}
+    # Column rows first, so a table-level row can reuse the table they resolved to
+    ordered = sorted((r for _, r in rows_df.iterrows()), key=lambda r: _cell_str(r, "Type").lower() == "table")
+    with st.spinner(f"Registering {len(rows_df)} term(s) to Microsoft Purview…"):
+        for row in ordered:
+            term_name      = _cell_str(row, "Business Term", "Glossary Term", "business_term") if send_term else ""
+            definition     = _cell_str(row, "Description", "Definition / Description", "description") if send_desc else ""
+            classification = _cell_str(row, "Classification") if send_cls else ""
+            physical_term  = _cell_str(row, "Physical Term", "Original Name", "physical_term")
+            _tbl_guid      = _cell_str(row, "table_guid") or str(selected_guid or "")
+            label          = term_name or physical_term
+            if not (term_name or definition or classification):
+                skipped.append(physical_term or "—")
+                continue
+
+            try:
+                purview_entity_guid = _resolve_purview_target(connector, row, lookup_cache)
+                sent = []
+
+                final_term_guid = None
+                if term_name:
+                    # Description=None keeps whatever description the term already has in Purview
+                    term_desc = definition if send_desc else None
+                    existing_term_guid = connector.get_term_by_name(term_name, glossary_guid=glossary_guid)
+                    if existing_term_guid:
+                        connector.update_glossary_term(existing_term_guid, term_name, term_desc, glossary_guid)
+                        final_term_guid = existing_term_guid
+                    else:
+                        result = connector.create_glossary_term(term_name, term_desc or "", glossary_guid)
+                        final_term_guid = result.get("guid") if isinstance(result, dict) else None
+                    if not final_term_guid:
+                        raise Exception("Purview did not return a glossary term id")
+                    if not connector.assign_term_to_entity(final_term_guid, purview_entity_guid):
+                        raise Exception(f"assigning the term to {physical_term} was rejected — {connector.last_error}")
+                    sent.append("Business Term")
+                    if definition:
+                        sent.append("Description")
+                elif definition:
+                    # No business term sent — the description goes on the column itself
+                    connector.update_entity_description(purview_entity_guid, definition)
+                    sent.append("Description")
+
+                if classification:
+                    if not connector.add_classification_to_entity(purview_entity_guid, classification):
+                        raise Exception(f"classification '{classification}' was rejected — {connector.last_error}")
+                    sent.append("Classification")
+
+                for f in sent:
+                    counts[f] += 1
+                glossary_db.mark_term_registered(_tbl_guid, physical_term, term_name or None, entity_guid=final_term_guid)
+                WorkflowManager._update_audit_log_status(label, "Registered", approver_comment="Registered back to Purview")
+                registered += 1
+            except Exception as e:
+                print(f"Purview registration error for {label}: {e}")
+                errors.append(f"Term '{label}': Purview registration failed — {e}")
+
+    WorkflowManager._rebuild_master_from_audit_log()
+    if errors:
+        head = f"Registered {registered} term(s); {len(errors)} failed and were not marked Registered:"
+        return False, "<br>".join([head] + [_html.escape(e) for e in errors])
+    g_info = f" in Purview Glossary '<b>{_html.escape(glossary_name)}</b>'" if glossary_name else " in Microsoft Purview"
+    sent = " · ".join(f"{counts[f]} {f.lower()}{'s' if counts[f] != 1 else ''}"
+                      for f in info_fields if counts[f])
+    msg = f"Successfully registered {registered} term(s){g_info}." + (f"<br>Sent: {sent}" if sent else "")
+    if skipped:
+        msg += f"<br>Skipped {len(skipped)} (no selected information to send): {_html.escape(', '.join(skipped))}"
+    return True, msg
+
+
+def _hub_register_message(state_key):
+    """Show the result box of the last registration (green on success, red on failure)."""
+    if state_key not in st.session_state:
+        return
+    ok, msg = st.session_state[state_key] if isinstance(st.session_state[state_key], tuple) else (True, st.session_state[state_key])
+    border, bg, fg, icon = ("#10B981", "#ECFDF5", "#065F46", "✅") if ok else ("#EF4444", "#FEF2F2", "#991B1B", "⚠️")
+    st.markdown(
+        f'<div style="background-color:{bg};border:1px solid {border};border-radius:8px;padding:12px 16px;'
+        f'margin-top:10px;margin-bottom:15px;display:flex;align-items:flex-start;gap:10px;">'
+        f'<span style="font-size:18px;">{icon}</span>'
+        f'<span style="font-weight:600;color:{fg};font-size:14px;line-height:1.6;">{msg}</span></div>',
+        unsafe_allow_html=True,
+    )
+
 
 def render_master_glossary_tab():
     render_dashboard_header("Glossary Hub")
@@ -2434,6 +2620,10 @@ def render_master_glossary_tab():
             unsafe_allow_html=True
         )
 
+        # ── Which information to show and register back to Purview ────────────
+        hub_info_fields = _hub_info_selector()
+        hub_hidden_info = [f for f in _HUB_INFO_OPTIONS if f not in hub_info_fields]
+
         # ── Sub-tabs: All Terms vs Current Session ───────────────────────────
         hub_tab_session, hub_tab_all = st.tabs(["✅ Current Session Approvals", "📋 All Terms"])
 
@@ -2529,6 +2719,7 @@ def render_master_glossary_tab():
                     "Definition / Description": "Description",
                     "Glossary Term":            "Business Term",
                 })
+                df_hist = _hub_prepare_df(df_hist)
 
                 # Apply classification filter
                 if classification_filter != "All" and "Classification" in df_hist.columns:
@@ -2601,7 +2792,8 @@ def render_master_glossary_tab():
                     "version": None, "id": None, "created_at": None,
                     "is_active": None, "timestamp": None, "data": None,
                     "table_guid": None, "entity_guid": None,
-                    "table_name": None, "related_column": None, "Confidence (%)": None
+                    "table_name": None, "related_column": None, "Confidence (%)": None,
+                    "source_type": None, "table_qualified_name": None, "table_entity_guid": None,
                 }
 
                 priority_cols = ["Select", "Active", "Version", "Status"]
@@ -2610,6 +2802,7 @@ def render_master_glossary_tab():
                 extra_cols  = [c for c in df_hist.columns
                                if c not in priority_cols and c not in middle_cols and c not in HIDDEN_COLS]
                 display_cols = [c for c in priority_cols if c in df_hist.columns] + middle_cols + extra_cols
+                display_cols = [c for c in display_cols if c not in hub_hidden_info]
 
                 col_config = {
                     "Select":        st.column_config.CheckboxColumn("Select", help="Check row to select for registration", default=True, width="small"),
@@ -2630,9 +2823,10 @@ def render_master_glossary_tab():
 
                 edited_dfs = []
                 if "table_name" in df_hist.columns:
-                    tables_in_all = sorted(set(df_hist["table_name"].fillna("—").apply(lambda x: str(x) if x else "—")))
+                    _hist_groups = pd.Series(_hub_table_groups(df_hist), index=df_hist.index)
+                    tables_in_all = sorted(set(_hist_groups))
                     for tbl in tables_in_all:
-                        sub_df = df_hist[df_hist["table_name"].fillna("—").apply(lambda x: str(x) if x else "—") == tbl]
+                        sub_df = df_hist[_hist_groups == tbl]
                         st.markdown(
                             f"<div style='margin:16px 0 6px 0;padding:6px 14px;"
                             f"background:#F3F4F6;border-left:4px solid #6B7280;"
@@ -2654,6 +2848,9 @@ def render_master_glossary_tab():
                             res_df["table_guid"] = sub_df["table_guid"].values
                         if "table_name" in sub_df.columns:
                             res_df["table_name"] = sub_df["table_name"].values
+                        for _hc in ("table_entity_guid", "table_qualified_name", "Type"):
+                            if _hc in sub_df.columns:
+                                res_df[_hc] = sub_df[_hc].values
                         edited_dfs.append(res_df)
                 else:
                     tbl_title = asset_to_view if asset_to_view else "GLOSSARY TERMS"
@@ -2678,6 +2875,9 @@ def render_master_glossary_tab():
                         res_df["table_guid"] = df_hist["table_guid"].values
                     if "table_name" in df_hist.columns:
                         res_df["table_name"] = df_hist["table_name"].values
+                    for _hc in ("table_entity_guid", "table_qualified_name", "Type"):
+                        if _hc in df_hist.columns:
+                            res_df[_hc] = df_hist[_hc].values
                     edited_dfs.append(res_df)
 
                 if edited_dfs:
@@ -2713,127 +2913,17 @@ def render_master_glossary_tab():
                 # Registration card
                 st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
-                _btn_disabled = not can_register or not _platform_name or target_register_df.empty
-                _btn_label = f"{_platform_icon} Register {len(target_register_df)} Selected Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
-                _btn_help = "🔒 No permission" if not can_register else ("No integration connected — go to Integrations & API" if not _platform_name else ("Select at least 1 term to register" if target_register_df.empty else f"Publish selected terms to {_platform_name}"))
+                _btn_disabled = not can_register or not _platform_name or target_register_df.empty or not hub_info_fields
+                _btn_label = "Register"
+                _btn_help = _hub_register_help(len(target_register_df), _platform_name, hub_info_fields, can_register)
 
                 if st.button(_btn_label, type="primary", use_container_width=True, disabled=_btn_disabled, help=_btn_help, key="hub_register_btn"):
                     if _purview_on or True:
-                        account_name  = creds.get("purview_account_name") or _sec_pur.get("account_name", "")
-                        tenant_id     = creds.get("purview_tenant_id") or _sec_pur.get("tenant_id", "")
-                        client_id     = creds.get("purview_client_id") or _sec_pur.get("client_id", "")
-                        client_secret = creds.get("purview_client_secret") or _sec_pur.get("client_secret", "")
-
-                        purview_connected = False
-                        auth_msg = ""
-                        glossary_guid = ""
-                        glossary_name = ""
-                        if all([account_name, tenant_id, client_id, client_secret]):
-                            try:
-                                connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
-                                ok, auth_msg = connector.authenticate()
-                                if ok:
-                                    purview_connected = True
-                                    glossaries = connector.get_glossaries()
-                                    if isinstance(glossaries, list) and glossaries:
-                                        glossary_guid = glossaries[0].get("guid", "")
-                                        glossary_name = glossaries[0].get("name", "")
-                                    elif isinstance(glossaries, dict):
-                                        glossary_guid = glossaries.get("guid", "")
-                                        glossary_name = glossaries.get("name", "")
-                                else:
-                                    purview_connected = False
-                            except Exception as e:
-                                purview_connected = False
-                                auth_msg = str(e)
-                        else:
-                            auth_msg = "Purview connection credentials missing."
-
-                        registered = 0
-                        reg_errors = []
-
-                        if not purview_connected:
-                            reg_errors.append(f"Failed to connect to Microsoft Purview API: {auth_msg}")
-                        elif not glossary_guid:
-                            reg_errors.append(f"Connected to Purview account '{account_name}', but no active Glossary was found in Purview.")
-                        else:
-                            with st.spinner(f"Registering {len(target_register_df)} term(s) to Microsoft Purview…"):
-                                for _, row in target_register_df.iterrows():
-                                    term_name     = str(row.get("Business Term") or row.get("Glossary Term") or row.get("business_term", "")).strip()
-                                    definition    = str(row.get("Description") or row.get("Definition / Description") or row.get("description", "")).strip()
-                                    physical_term = str(row.get("Physical Term") or row.get("Original Name") or row.get("physical_term", "")).strip()
-                                    classification = str(row.get("Classification", "")).strip() if row.get("Classification") and str(row.get("Classification")) != 'nan' else ""
-                                    _tbl_guid     = str(row.get("table_guid") or row.get("table_name") or selected_guid or "").strip()
-                                    if not term_name:
-                                        continue
-
-                                    purview_entity_guid = None
-                                    final_term_guid = None
-                                    try:
-                                        existing_term_guid = connector.get_term_by_name(term_name, glossary_guid=glossary_guid)
-                                        if existing_term_guid:
-                                            connector.update_glossary_term(existing_term_guid, term_name, definition, glossary_guid)
-                                            final_term_guid = existing_term_guid
-                                        else:
-                                            result = connector.create_glossary_term(term_name, definition, glossary_guid)
-                                            final_term_guid = result.get("guid") if isinstance(result, dict) else None
-
-                                        # Step A: Resolve Table Entity GUID if _tbl_guid is a table name instead of a UUID
-                                        table_entity_guid = _tbl_guid
-                                        if _tbl_guid and not ("-" in _tbl_guid and len(_tbl_guid) >= 32):
-                                            try:
-                                                searched_tbl = connector.search_entity_by_name(_tbl_guid)
-                                                if searched_tbl:
-                                                    table_entity_guid = searched_tbl
-                                            except Exception:
-                                                pass
-
-                                        # Step B: Map term to specific column GUID from table columns
-                                        if table_entity_guid:
-                                            try:
-                                                col_guids = connector.get_table_columns_with_guids(table_entity_guid)
-                                                if isinstance(col_guids, dict) and physical_term:
-                                                    for c_name, c_guid in col_guids.items():
-                                                        if c_name.strip().lower() == physical_term.strip().lower():
-                                                            purview_entity_guid = c_guid
-                                                            break
-                                            except Exception:
-                                                pass
-
-                                        # Step C: Fallback search by physical term name
-                                        if not purview_entity_guid and physical_term:
-                                            try:
-                                                purview_entity_guid = connector.search_entity_by_name(physical_term)
-                                            except Exception:
-                                                pass
-
-                                        # Step D: Fallback to table entity GUID itself
-                                        if not purview_entity_guid and table_entity_guid:
-                                            purview_entity_guid = table_entity_guid
-
-                                        # Step E: Assign term to target asset entity in Purview
-                                        if final_term_guid and purview_entity_guid:
-                                            connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
-
-                                        # Step F: Add classification to target asset entity in Purview
-                                        if classification and purview_entity_guid:
-                                            connector.add_classification_to_entity(purview_entity_guid, classification)
-
-                                        # Mark status as Registered in place & persist Purview term GUID
-                                        glossary_db.mark_term_registered(_tbl_guid, physical_term, term_name, entity_guid=final_term_guid)
-                                        WorkflowManager._update_audit_log_status(term_name, "Registered", approver_comment="Registered back to Purview")
-                                        registered += 1
-                                    except Exception as e:
-                                        print(f"Purview registration error for {term_name}: {e}")
-                                        reg_errors.append(f"Term '{term_name}': Purview registration failed — {str(e)}")
-
-                        WorkflowManager._rebuild_master_from_audit_log()
-                        if reg_errors:
-                            st.session_state["_hub_register_msg"] = "<br>".join(reg_errors)
-                        else:
-                            g_info = f" in Purview Glossary '<b>{glossary_name}</b>'" if glossary_name else " in Microsoft Purview"
-                            st.session_state["_hub_register_msg"] = f"Successfully registered {registered} term(s){g_info}."
-                        st.toast(f"✅ Registered {registered} term(s) to Microsoft Purview!", icon="✅")
+                        st.session_state["_hub_register_msg"] = _register_rows_to_purview(
+                            target_register_df, hub_info_fields, selected_guid)
+                        _reg_ok = st.session_state["_hub_register_msg"][0]
+                        st.toast("✅ Registered to Microsoft Purview!" if _reg_ok else "⚠️ Registration finished with errors",
+                                 icon="✅" if _reg_ok else "⚠️")
                         st.rerun()
 
                     elif _db_on:
@@ -2872,16 +2962,8 @@ def render_master_glossary_tab():
                                     if not _applied and not _skipped:
                                         st.warning("No tags were pushed.")
 
-                # Display registration success message box directly under the Register button
-                if "_hub_register_msg" in st.session_state:
-                    _msg = st.session_state.get("_hub_register_msg")
-                    st.markdown(
-                        f"""<div style="background-color: #ECFDF5; border: 1px solid #10B981; border-radius: 8px; padding: 12px 16px; margin-top: 10px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
-                            <span style="font-size: 18px; color: #10B981;">✅</span>
-                            <span style="font-weight: 600; color: #065F46; font-size: 14px;">{_msg}</span>
-                        </div>""",
-                        unsafe_allow_html=True,
-                    )
+                # Display registration result directly under the Register button
+                _hub_register_message("_hub_register_msg")
 
         # ═══════════════════════════════════════════════════════════════════════
         # CURRENT SESSION APPROVALS TAB
@@ -2910,6 +2992,7 @@ def render_master_glossary_tab():
                     "table_guid": "table_guid",
                     "entity_guid": "entity_guid",
                 })
+                df_session = _hub_prepare_df(df_session)
 
                 if classification_filter != "All" and "Classification" in df_session.columns:
                     df_session = df_session[df_session["Classification"].fillna("").astype(str).str.contains(classification_filter, case=False, regex=False)]
@@ -2939,12 +3022,13 @@ def render_master_glossary_tab():
                     df_session.insert(0, "Select", True)
 
                 _sess_display_cols = ["Select", "Type", "Physical Term", "Business Term", "Description", "Classification", "Source", "Version", "Status"]
-                _sess_display_cols = [c for c in _sess_display_cols if c in df_session.columns]
+                _sess_display_cols = [c for c in _sess_display_cols if c in df_session.columns and c not in hub_hidden_info]
 
                 sess_edited_dfs = []
-                tables_in_session = sorted(set(df_session["table_name"].fillna("—").apply(lambda x: str(x) if x else "—")))
+                _sess_groups = pd.Series(_hub_table_groups(df_session), index=df_session.index)
+                tables_in_session = sorted(set(_sess_groups))
                 for tbl in tables_in_session:
-                    df_tbl = df_session[df_session["table_name"].fillna("—").apply(lambda x: str(x) if x else "—") == tbl]
+                    df_tbl = df_session[_sess_groups == tbl]
                     st.markdown(
                         f"<div style='margin:16px 0 6px 0;padding:6px 14px;"
                         f"background:#F3F4F6;border-left:4px solid #6B7280;"
@@ -2968,6 +3052,9 @@ def render_master_glossary_tab():
                         res_sess["table_guid"] = df_tbl["table_guid"].values
                     if "table_name" in df_tbl.columns:
                         res_sess["table_name"] = df_tbl["table_name"].values
+                    for _hc in ("table_entity_guid", "table_qualified_name", "Type"):
+                        if _hc in df_tbl.columns:
+                            res_sess[_hc] = df_tbl[_hc].values
                     sess_edited_dfs.append(res_sess)
 
                 if sess_edited_dfs:
@@ -3000,139 +3087,21 @@ def render_master_glossary_tab():
                     _platform_name = None
                     _platform_icon = "🔗"
 
-                _btn_disabled = not can_register or not _platform_name or target_session_df.empty
-                _btn_label = f"{_platform_icon} Register {len(target_session_df)} Session Term(s) to {_platform_name}" if _platform_name else "🔗 Connect an Integration First"
-                _btn_help = "🔒 No permission" if not can_register else ("No integration connected" if not _platform_name else ("Select at least 1 term to register" if target_session_df.empty else f"Publish selected session terms to {_platform_name}"))
+                _btn_disabled = not can_register or not _platform_name or target_session_df.empty or not hub_info_fields
+                _btn_label = "Register"
+                _btn_help = _hub_register_help(len(target_session_df), _platform_name, hub_info_fields, can_register)
 
                 if st.button(_btn_label, type="primary", use_container_width=True, disabled=_btn_disabled, help=_btn_help, key="hub_session_register_btn"):
                     if _purview_on or True:
-                        account_name  = _creds.get("purview_account_name") or _sec_pur.get("account_name", "")
-                        tenant_id     = _creds.get("purview_tenant_id") or _sec_pur.get("tenant_id", "")
-                        client_id     = _creds.get("purview_client_id") or _sec_pur.get("client_id", "")
-                        client_secret = _creds.get("purview_client_secret") or _sec_pur.get("client_secret", "")
-
-                        purview_connected = False
-                        auth_msg = ""
-                        glossary_guid = ""
-                        glossary_name = ""
-                        if all([account_name, tenant_id, client_id, client_secret]):
-                            try:
-                                connector = PurviewConnector(account_name, tenant_id, client_id, client_secret)
-                                ok, auth_msg = connector.authenticate()
-                                if ok:
-                                    purview_connected = True
-                                    glossaries = connector.get_glossaries()
-                                    if isinstance(glossaries, list) and glossaries:
-                                        glossary_guid = glossaries[0].get("guid", "")
-                                        glossary_name = glossaries[0].get("name", "")
-                                    elif isinstance(glossaries, dict):
-                                        glossary_guid = glossaries.get("guid", "")
-                                        glossary_name = glossaries.get("name", "")
-                                else:
-                                    purview_connected = False
-                            except Exception as e:
-                                purview_connected = False
-                                auth_msg = str(e)
-                        else:
-                            auth_msg = "Purview connection credentials missing."
-
-                        registered = 0
-                        reg_errors = []
-
-                        if not purview_connected:
-                            reg_errors.append(f"Failed to connect to Microsoft Purview API: {auth_msg}")
-                        elif not glossary_guid:
-                            reg_errors.append(f"Connected to Purview account '{account_name}', but no active Glossary was found in Purview.")
-                        else:
-                            with st.spinner(f"Registering {len(target_session_df)} session term(s) to Microsoft Purview…"):
-                                for _, row in target_session_df.iterrows():
-                                    term_name = str(row.get("Business Term") or row.get("business_term", "")).strip()
-                                    definition = str(row.get("Description") or row.get("description", "")).strip()
-                                    physical_term = str(row.get("Physical Term") or row.get("physical_term", "")).strip()
-                                    classification = str(row.get("Classification", "")).strip() if row.get("Classification") and str(row.get("Classification")) != 'nan' else ""
-                                    _tbl_guid = str(row.get("table_guid") or row.get("table_name") or selected_guid or "").strip()
-                                    if not term_name:
-                                        continue
-
-                                    purview_entity_guid = None
-                                    final_term_guid = None
-                                    try:
-                                        existing_term_guid = connector.get_term_by_name(term_name, glossary_guid=glossary_guid)
-                                        if existing_term_guid:
-                                            connector.update_glossary_term(existing_term_guid, term_name, definition, glossary_guid)
-                                            final_term_guid = existing_term_guid
-                                        else:
-                                            result = connector.create_glossary_term(term_name, definition, glossary_guid)
-                                            final_term_guid = result.get("guid") if isinstance(result, dict) else None
-
-                                        # Step A: Resolve Table Entity GUID if _tbl_guid is a table name instead of a UUID
-                                        table_entity_guid = _tbl_guid
-                                        if _tbl_guid and not ("-" in _tbl_guid and len(_tbl_guid) >= 32):
-                                            try:
-                                                searched_tbl = connector.search_entity_by_name(_tbl_guid)
-                                                if searched_tbl:
-                                                    table_entity_guid = searched_tbl
-                                            except Exception:
-                                                pass
-
-                                        # Step B: Map term to specific column GUID from table columns
-                                        if table_entity_guid:
-                                            try:
-                                                col_guids = connector.get_table_columns_with_guids(table_entity_guid)
-                                                if isinstance(col_guids, dict) and physical_term:
-                                                    for c_name, c_guid in col_guids.items():
-                                                        if c_name.strip().lower() == physical_term.strip().lower():
-                                                            purview_entity_guid = c_guid
-                                                            break
-                                            except Exception:
-                                                pass
-
-                                        # Step C: Fallback search by physical term name
-                                        if not purview_entity_guid and physical_term:
-                                            try:
-                                                purview_entity_guid = connector.search_entity_by_name(physical_term)
-                                            except Exception:
-                                                pass
-
-                                        # Step D: Fallback to table entity GUID itself
-                                        if not purview_entity_guid and table_entity_guid:
-                                            purview_entity_guid = table_entity_guid
-
-                                        # Step E: Assign term to target asset entity in Purview
-                                        if final_term_guid and purview_entity_guid:
-                                            connector.assign_term_to_entity(final_term_guid, purview_entity_guid)
-
-                                        # Step F: Add classification to target asset entity in Purview
-                                        if classification and purview_entity_guid:
-                                            connector.add_classification_to_entity(purview_entity_guid, classification)
-
-                                        # Update status in DB in place & persist Purview term GUID
-                                        glossary_db.mark_term_registered(_tbl_guid, physical_term, term_name, entity_guid=final_term_guid)
-                                        WorkflowManager._update_audit_log_status(term_name, "Registered", approver_comment="Registered back to Purview")
-                                        registered += 1
-                                    except Exception as e:
-                                        print(f"Purview registration error for {term_name}: {e}")
-                                        reg_errors.append(f"Term '{term_name}': Purview registration failed — {str(e)}")
-
-                        WorkflowManager._rebuild_master_from_audit_log()
-                        if reg_errors:
-                            st.session_state["_hub_session_register_msg"] = "<br>".join(reg_errors)
-                        else:
-                            g_info = f" in Purview Glossary '<b>{glossary_name}</b>'" if glossary_name else " in Microsoft Purview"
-                            st.session_state["_hub_session_register_msg"] = f"Successfully registered {registered} term(s){g_info}."
-                        st.toast(f"✅ Registered {registered} term(s) to Microsoft Purview!", icon="✅")
+                        st.session_state["_hub_session_register_msg"] = _register_rows_to_purview(
+                            target_session_df, hub_info_fields)
+                        _reg_ok = st.session_state["_hub_session_register_msg"][0]
+                        st.toast("✅ Registered to Microsoft Purview!" if _reg_ok else "⚠️ Registration finished with errors",
+                                 icon="✅" if _reg_ok else "⚠️")
                         st.rerun()
 
-                # Display registration success message box directly under the Register button
-                if "_hub_session_register_msg" in st.session_state:
-                    _msg = st.session_state.get("_hub_session_register_msg")
-                    st.markdown(
-                        f"""<div style="background-color: #ECFDF5; border: 1px solid #10B981; border-radius: 8px; padding: 12px 16px; margin-top: 10px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
-                            <span style="font-size: 18px; color: #10B981;">✅</span>
-                            <span style="font-weight: 600; color: #065F46; font-size: 14px;">{_msg}</span>
-                        </div>""",
-                        unsafe_allow_html=True,
-                    )
+                # Display registration result directly under the Register button
+                _hub_register_message("_hub_session_register_msg")
 
 # ============================================
 # SEMANTIC SEARCH TAB
