@@ -405,7 +405,7 @@ class PurviewConnector:
         }
 
         try:
-            r = requests.post(url, headers=self._headers(), json=payload, timeout=30)
+            r = requests.post(url, headers=self._headers(), params={"api-version": "2023-09-01"}, json=payload, timeout=30)
             print(f"Purview glossary API response: {r.status_code}")
             
             if r.status_code in (200, 201):
@@ -564,49 +564,56 @@ class PurviewConnector:
             raise Exception(f"Authentication failed: {msg}")
 
         headers = self._headers()
-
-        # Method 1: POST /datamap/api/atlas/v2/glossary/terms/{term_guid}/assignedEntities
-        url1 = f"{self.base_url}/datamap/api/atlas/v2/glossary/terms/{term_guid}/assignedEntities"
-        payload1 = [{"guid": entity_guid}]
+        params = {"api-version": "2023-09-01"}
         self.last_error = ""
-        try:
-            r1 = requests.post(url1, headers=headers, json=payload1, timeout=30)
-            if r1.status_code in (200, 201, 204):
-                return True
-            self.last_error = f"HTTP {r1.status_code}: {r1.text[:300]}"
-        except Exception as e:
-            self.last_error = str(e)
 
-        # Method 2: POST with relationshipStatus ACTIVE
-        payload2 = [{"guid": entity_guid, "relationshipStatus": "ACTIVE"}]
-        try:
-            r2 = requests.post(url1, headers=headers, json=payload2, timeout=30)
-            if r2.status_code in (200, 201, 204):
-                return True
-        except Exception:
-            pass
+        # The term must be linked as a glossary-term assignment (AtlasGlossarySemanticAssignment),
+        # which Purview shows under the asset's "Glossary terms". Never fall back to re-saving the
+        # whole entity: a full PUT of the GET payload resubmits every relationship on the asset
+        # and can attach the term as some other relationship type instead.
+        target = (self.get_entity(entity_guid) or {}).get("entity") or {}
+        target_type = target.get("typeName") or ""
+        if not target_type:
+            self.last_error = f"asset {entity_guid} was not found in Purview"
+            return False
+        if target_type.startswith("AtlasGlossary"):
+            self.last_error = f"target {entity_guid} is a {target_type}, not a data asset"
+            return False
+        if self._entity_has_term(entity_guid, term_guid):
+            return True
 
-        # Method 3: Update Entity Meanings directly via GET + PUT /datamap/api/atlas/v2/entity/guid/{entity_guid}
-        url3 = f"{self.base_url}/datamap/api/atlas/v2/entity/guid/{entity_guid}"
-        try:
-            r3 = requests.get(url3, headers=headers, timeout=30)
-            if r3.status_code == 200:
-                entity_obj = r3.json()
-                if isinstance(entity_obj, dict) and "entity" in entity_obj:
-                    entity = entity_obj["entity"]
-                    meanings = entity.get("meanings", [])
-                    if any(isinstance(m, dict) and m.get("termGuid") == term_guid for m in meanings):
-                        return True  # already assigned
-                    else:
-                        meanings.append({"termGuid": term_guid})
-                        entity["meanings"] = meanings
-                        r_put = requests.put(f"{self.base_url}/datamap/api/atlas/v2/entity", headers=headers, json=entity_obj, timeout=30)
-                        if r_put.status_code in (200, 201, 204):
-                            return True
-        except Exception:
-            pass
+        attempts = [
+            # Method 1: documented term → assigned entities endpoint
+            ("post", f"{self.base_url}/datamap/api/atlas/v2/glossary/terms/{term_guid}/assignedEntities",
+             [{"guid": entity_guid}]),
+            # Method 2: create the semantic-assignment relationship explicitly
+            ("post", f"{self.base_url}/datamap/api/atlas/v2/relationship",
+             {"typeName": "AtlasGlossarySemanticAssignment",
+              "end1": {"guid": term_guid, "typeName": "AtlasGlossaryTerm"},
+              "end2": {"guid": entity_guid, "typeName": target_type}}),
+        ]
+        errors = []
+        for method, url, payload in attempts:
+            try:
+                r = requests.request(method, url, headers=headers, params=params, json=payload, timeout=30)
+                if r.status_code in (200, 201, 204):
+                    if self._entity_has_term(entity_guid, term_guid):
+                        return True
+                    errors.append(f"{url.rsplit('/', 1)[-1]}: accepted but the term is not on the asset's glossary terms")
+                else:
+                    errors.append(f"{url.rsplit('/', 1)[-1]}: HTTP {r.status_code}: {r.text[:300]}")
+            except Exception as e:
+                errors.append(f"{url.rsplit('/', 1)[-1]}: {e}")
 
+        self.last_error = " | ".join(errors)
         return False
+
+    def _entity_has_term(self, entity_guid, term_guid):
+        """True when term_guid is an active glossary term (meanings) on the entity."""
+        try:
+            return any(t["guid"] == term_guid for t in self.get_entity_glossary_state(entity_guid)["terms"])
+        except Exception:
+            return False
 
 
 
@@ -620,7 +627,7 @@ class PurviewConnector:
         url_get = f"{self.base_url}/datamap/api/atlas/v2/glossary/term/{term_guid}"
         payload = [{"guid": entity_guid}]
         try:
-            r = requests.get(url_get, headers=self._headers(), timeout=30)
+            r = requests.get(url_get, headers=self._headers(), params={"api-version": "2023-09-01"}, timeout=30)
             if r.status_code == 200:
                 term_data = r.json()
                 assigned = term_data.get('assignedEntities', [])
@@ -637,7 +644,7 @@ class PurviewConnector:
         url = f"{self.base_url}/datamap/api/atlas/v2/glossary/terms/{term_guid}/assignedEntities"
 
         try:
-            r = requests.delete(url, headers=self._headers(), json=payload, timeout=30)
+            r = requests.delete(url, headers=self._headers(), params={"api-version": "2023-09-01"}, json=payload, timeout=30)
             if r.status_code not in (200, 204):
                 raise Exception(f"Failed to unassign term (HTTP {r.status_code}): {r.text[:500]}")
             return True

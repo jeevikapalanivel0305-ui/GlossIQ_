@@ -2263,6 +2263,13 @@ def _resolve_purview_target(connector, row, cache):
     is_table_row = _cell_str(row, "Type").lower() == "table" or physical.upper() == table_name.upper()
     resolved_key = ("resolved", table_name.upper(), qualified)
     table_guid = _cell_str(row, "table_entity_guid")
+    if table_guid:
+        # The row may have been discovered in another Purview account; its GUID only
+        # counts if it exists in the account we are registering to now.
+        if ("exists", table_guid) not in cache:
+            cache[("exists", table_guid)] = bool((connector.get_entity(table_guid) or {}).get("entity"))
+        if not cache[("exists", table_guid)]:
+            table_guid = ""
     if not table_guid:
         if ("search", table_name.upper()) not in cache:
             cache[("search", table_name.upper())] = connector.find_tables_by_name(table_name)
@@ -2304,10 +2311,13 @@ def _purview_session():
     """Authenticated Purview connector and its first glossary → (connector, glossary_guid, glossary_name). Raises on failure."""
     creds    = st.session_state.get("connector_creds", {})
     _sec_pur = st.secrets.get("purview", {})
-    account_name  = creds.get("purview_account_name") or _sec_pur.get("account_name", "")
-    tenant_id     = creds.get("purview_tenant_id") or _sec_pur.get("tenant_id", "")
-    client_id     = creds.get("purview_client_id") or _sec_pur.get("client_id", "")
-    client_secret = creds.get("purview_client_secret") or _sec_pur.get("client_secret", "")
+    # Credentials entered in Integrations win as a full set; secrets are only the default.
+    # Never mix fields from the two, or one tenant's IDs would be sent with another's secret.
+    _fields = ("account_name", "tenant_id", "client_id", "client_secret")
+    if any(creds.get(f"purview_{f}") for f in _fields):
+        account_name, tenant_id, client_id, client_secret = (creds.get(f"purview_{f}", "") for f in _fields)
+    else:
+        account_name, tenant_id, client_id, client_secret = (_sec_pur.get(f, "") for f in _fields)
     if not all([account_name, tenant_id, client_id, client_secret]):
         raise Exception("Failed to connect to Microsoft Purview API: Purview connection credentials missing.")
     try:
