@@ -608,6 +608,94 @@ class PurviewConnector:
         self.last_error = " | ".join(errors)
         return False
 
+    # =========================================================
+    # UNIFIED CATALOG (governance-domain glossary terms)
+    # =========================================================
+    UC_API_VERSION = "2025-09-15-preview"
+
+    def _uc(self, method, path, params=None, json=None):
+        """Call the Unified Catalog API; returns the response (caller checks status)."""
+        return requests.request(
+            method, f"{self.base_url}/datagovernance/catalog/{path}", headers=self._headers(),
+            params={"api-version": self.UC_API_VERSION, **(params or {})}, json=json, timeout=30)
+
+    def _uc_paged(self, path, params=None):
+        out, skip = [], 0
+        while True:
+            r = self._uc("get", path, {**(params or {}), "skip": skip, "top": 100})
+            if r.status_code != 200:
+                raise Exception(f"Unified Catalog {path} failed (HTTP {r.status_code}): {r.text[:300]}")
+            vals = r.json().get("value", [])
+            out += vals
+            skip += len(vals)
+            if not vals or not r.json().get("nextLink"):
+                return out
+
+    def get_governance_domains(self):
+        """Governance domains → [{id, name, status, type}], sorted by name."""
+        ok, msg = self.authenticate()
+        if not ok:
+            raise Exception(f"Authentication failed: {msg}")
+        doms = self._uc_paged("businessdomains")
+        return sorted(({k: d.get(k) for k in ("id", "name", "status", "type")} for d in doms),
+                      key=lambda d: (d["name"] or "").lower())
+
+    def find_domain_term(self, name, domain_id):
+        """The governance-domain term with exactly this name (case-insensitive), or None."""
+        for t in self._uc_paged("terms", {"domainId": domain_id, "keyword": name}):
+            if (t.get("name") or "").strip().lower() == name.strip().lower() and t.get("domain") == domain_id:
+                return t
+        return None
+
+    def create_domain_term(self, name, description, domain_id, status="PUBLISHED"):
+        """Create a glossary term in a governance domain → term dict."""
+        import uuid
+        payload = {"id": str(uuid.uuid4()), "name": name, "domain": domain_id,
+                   "status": status, "description": description or ""}
+        r = self._uc("post", "terms", json=payload)
+        if r.status_code not in (200, 201):
+            raise Exception(f"creating term '{name}' in the governance domain failed (HTTP {r.status_code}): {r.text[:300]}")
+        return r.json()
+
+    def update_domain_term_description(self, term, description):
+        """Replace a governance-domain term's description (full PUT of the term)."""
+        body = {k: v for k, v in term.items() if k != "systemData"}
+        body["description"] = description
+        r = self._uc("put", f"terms/{term['id']}", json=body)
+        if r.status_code not in (200, 201):
+            raise Exception(f"updating term '{term.get('name')}' failed (HTTP {r.status_code}): {r.text[:300]}")
+        return r.json()
+
+    def get_uc_asset_id(self, datamap_guid):
+        """Unified Catalog data-asset id for a Data Map entity GUID, or None if it isn't in the catalog."""
+        r = self._uc("post", "dataAssets/query", json={"sourceAssetIds": [datamap_guid]})
+        if r.status_code != 200:
+            raise Exception(f"Unified Catalog asset lookup failed (HTTP {r.status_code}): {r.text[:300]}")
+        hits = [a for a in r.json().get("value", []) if (a.get("source") or {}).get("assetId") == datamap_guid]
+        return hits[0]["id"] if hits else None
+
+    def _uc_term_asset_ids(self, term_id):
+        r = self._uc("get", f"terms/{term_id}/relationships", {"entityType": "DATAASSET"})
+        return {x.get("entityId") for x in r.json().get("value", [])} if r.status_code == 200 else set()
+
+    def link_domain_term_to_asset(self, term_id, uc_asset_id, note=""):
+        """
+        Link a governance-domain term to a Unified Catalog data asset. Returns True only when
+        the link is readable back from the term (sets last_error otherwise).
+        """
+        self.last_error = ""
+        if uc_asset_id in self._uc_term_asset_ids(term_id):
+            return True
+        r = self._uc("post", f"terms/{term_id}/relationships", {"entityType": "DATAASSET"},
+                     json={"entityId": uc_asset_id, "relationshipType": "Related", "description": note})
+        if r.status_code not in (200, 201):
+            self.last_error = f"HTTP {r.status_code}: {r.text[:300]}"
+            return False
+        if uc_asset_id not in self._uc_term_asset_ids(term_id):
+            self.last_error = "Purview accepted the link but it is not on the term's data assets"
+            return False
+        return True
+
     def _entity_has_term(self, entity_guid, term_guid):
         """True when term_guid is an active glossary term (meanings) on the entity."""
         try:

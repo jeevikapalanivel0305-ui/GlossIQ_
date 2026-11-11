@@ -2300,15 +2300,18 @@ def _resolve_purview_target(connector, row, cache):
         cache.setdefault(resolved_key, set()).add(table_guid)
 
     if is_table_row:
+        cache[("table_of", table_guid)] = table_guid
         return table_guid
     col_guid = next((g for n, g in _columns(table_guid).items() if n.strip().lower() == physical.lower()), None)
     if not col_guid:
         raise Exception(f"column {physical} was not found on table {table_name} in Purview")
+    # Unified Catalog links terms to the table's data asset, so remember the column's table
+    cache[("table_of", col_guid)] = table_guid
     return col_guid
 
 
-def _purview_session():
-    """Authenticated Purview connector and its first glossary → (connector, glossary_guid, glossary_name). Raises on failure."""
+def _purview_connector():
+    """Authenticated Purview connector for the active credentials. Raises on failure."""
     creds    = st.session_state.get("connector_creds", {})
     _sec_pur = st.secrets.get("purview", {})
     # Credentials entered in Integrations win as a full set; secrets are only the default.
@@ -2325,6 +2328,32 @@ def _purview_session():
         ok, auth_msg = connector.authenticate()
         if not ok:
             raise Exception(auth_msg)
+    except Exception as e:
+        raise Exception(f"Failed to connect to Microsoft Purview API: {e}")
+    return connector
+
+
+def _purview_governance_domains():
+    """Governance domains of the connected Purview account, cached per account for the session.
+    → (domains, error); domains is [] when Unified Catalog isn't available."""
+    try:
+        connector = _purview_connector()
+    except Exception as e:
+        return [], str(e)
+    key = f"_pv_domains_{connector.account_name.lower()}"
+    if key not in st.session_state:
+        try:
+            st.session_state[key] = (connector.get_governance_domains(), "")
+        except Exception as e:
+            return [], str(e)
+    return st.session_state[key]
+
+
+def _purview_session():
+    """Authenticated Purview connector and its first glossary → (connector, glossary_guid, glossary_name). Raises on failure."""
+    connector = _purview_connector()
+    account_name = connector.account_name
+    try:
         glossaries = connector.get_glossaries()
     except Exception as e:
         raise Exception(f"Failed to connect to Microsoft Purview API: {e}")
@@ -2344,22 +2373,32 @@ def _hub_ordered_rows(rows_df):
     return sorted((r for _, r in rows_df.iterrows()), key=lambda r: _cell_str(r, "Type").lower() == "table")
 
 
-def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="insert"):
+def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="insert",
+                              domain=None, term_status="PUBLISHED"):
     """
     Register Glossary Hub rows to Microsoft Purview, sending only `info_fields`:
-      Business Term  → create/update the glossary term and assign it to the column
+      Business Term  → with `domain` ({id, name}): create/reuse the term in that governance domain
+                       (Unified Catalog) and link it to the row's table data asset.
+                       Without `domain`: classic Data Map glossary term assigned to the column.
       Description    → term definition when Business Term is sent, otherwise the column's description
       Classification → classification on the column
     mode="insert" adds alongside what the column already has (existing descriptions are kept);
-    mode="update" replaces it: other terms are unassigned from the column, other
-    classifications removed and descriptions overwritten.
+    mode="update" replaces it: other classic terms are unassigned from the column, other
+    classifications removed and descriptions overwritten. Governance-domain links are never
+    removed, because they sit on the table and are shared by its columns.
     Returns (ok: bool, message_html: str).
     """
     try:
-        connector, glossary_guid, glossary_name = _purview_session()
+        if domain:
+            connector = _purview_connector()
+            glossary_guid, glossary_name = None, None
+        else:
+            connector, glossary_guid, glossary_name = _purview_session()
     except Exception as e:
         return False, str(e)
     replace = mode == "update"
+    domain_terms = {}   # term name (lower) → Unified Catalog term dict
+    uc_assets = {}      # Data Map table GUID → Unified Catalog data asset id
 
     send_term = "Business Term" in info_fields
     send_desc = "Description" in info_fields
@@ -2387,7 +2426,35 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
                 sent = []
 
                 final_term_guid = None
-                if term_name:
+                if term_name and domain:
+                    # Governance-domain term (Unified Catalog), linked to the table's data asset
+                    term_desc = definition if send_desc else None
+                    key = term_name.strip().lower()
+                    if key not in domain_terms:
+                        domain_terms[key] = connector.find_domain_term(term_name, domain["id"])
+                    term = domain_terms[key]
+                    if term:
+                        # Insert never overwrites an existing term's definition; Update does
+                        if replace and term_desc is not None and term_desc != (term.get("description") or ""):
+                            term = domain_terms[key] = connector.update_domain_term_description(term, term_desc)
+                    else:
+                        term = domain_terms[key] = connector.create_domain_term(
+                            term_name, term_desc or "", domain["id"], status=term_status)
+                    final_term_guid = term.get("id")
+                    if not final_term_guid:
+                        raise Exception("Purview did not return a term id")
+                    table_guid = lookup_cache.get(("table_of", purview_entity_guid), purview_entity_guid)
+                    if table_guid not in uc_assets:
+                        uc_assets[table_guid] = connector.get_uc_asset_id(table_guid)
+                    if not uc_assets[table_guid]:
+                        raise Exception(f"table {_cell_str(row, 'table_name')} is not a data asset in the Unified Catalog yet")
+                    note = "" if table_guid == purview_entity_guid else f"Column: {physical_term}"
+                    if not connector.link_domain_term_to_asset(final_term_guid, uc_assets[table_guid], note):
+                        raise Exception(f"linking the term to {_cell_str(row, 'table_name')} was rejected — {connector.last_error}")
+                    sent.append("Business Term")
+                    if definition:
+                        sent.append("Description")
+                elif term_name:
                     # Description=None keeps whatever description the term already has in Purview
                     term_desc = definition if send_desc else None
                     existing_term_guid = connector.get_term_by_name(term_name, glossary_guid=glossary_guid)
@@ -2446,7 +2513,12 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
     if errors:
         head = f"Registered {registered} term(s); {len(errors)} failed and were not marked Registered:"
         return False, "<br>".join([head] + [_html.escape(e) for e in errors])
-    g_info = f" in Purview Glossary '<b>{_html.escape(glossary_name)}</b>'" if glossary_name else " in Microsoft Purview"
+    if domain:
+        g_info = f" in governance domain '<b>{_html.escape(domain['name'])}</b>'"
+    elif glossary_name:
+        g_info = f" in Purview Glossary '<b>{_html.escape(glossary_name)}</b>'"
+    else:
+        g_info = " in Microsoft Purview"
     sent = " · ".join(f"{counts[f]} {f.lower()}{'s' if counts[f] != 1 else ''}"
                       for f in info_fields if counts[f])
     msg = f"Successfully registered {registered} term(s){g_info}." + (f"<br>Sent: {sent}" if sent else "")
@@ -2460,8 +2532,9 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
     return True, msg
 
 
-def _hub_finish_register(rows_df, info_fields, msg_key, selected_guid, mode):
-    st.session_state[msg_key] = _register_rows_to_purview(rows_df, info_fields, selected_guid, mode=mode)
+def _hub_finish_register(rows_df, info_fields, msg_key, selected_guid, mode, domain=None, term_status="PUBLISHED"):
+    st.session_state[msg_key] = _register_rows_to_purview(rows_df, info_fields, selected_guid, mode=mode,
+                                                          domain=domain, term_status=term_status)
     ok = st.session_state[msg_key][0]
     st.toast("Registered to Microsoft Purview" if ok else "Registration finished with errors")
 
@@ -2481,12 +2554,32 @@ def _hub_cancel_register():
 @st.dialog("Register to Microsoft Purview", width="large", on_dismiss=_hub_cancel_register)
 def _hub_register_dialog():
     pending = st.session_state["_hub_pending_register"]
-    st.markdown(f"Register **{len(pending['rows'])}** selected term(s). Choose how:")
+    st.markdown(f"Register **{len(pending['rows'])}** selected term(s).")
+
+    domain, term_status = None, "PUBLISHED"
+    if "Business Term" in pending["fields"]:
+        domains, dom_err = _purview_governance_domains()
+        if domains:
+            labels = [f"{d['name']}  ({d['status']})" for d in domains]
+            idx = st.selectbox("Governance domain", range(len(domains)), format_func=lambda i: labels[i],
+                               key="hub_reg_domain",
+                               help="Terms are created in this governance domain and linked to each row's table data asset.")
+            domain = domains[idx]
+            term_status = st.radio("Term status", ["PUBLISHED", "DRAFT"], horizontal=True, key="hub_reg_status",
+                                   format_func=str.title,
+                                   help="Status for terms that don't exist in the domain yet. Existing terms keep theirs.")
+            st.caption("Column terms are linked to the column's table in the Unified Catalog, with the column "
+                       "named in the link. Purview doesn't support linking domain terms to single columns.")
+        else:
+            st.warning("No governance domains found in this Purview account, so terms go to the classic glossary."
+                       + (f" ({dom_err})" if dom_err else ""))
+
+    st.markdown("Choose how:")
     st.markdown(
         "- **Insert** — add the new terms and classifications alongside the existing ones. "
         "Existing descriptions are kept.\n"
-        "- **Update** — replace them: the old terms are unassigned from these columns, old classifications "
-        "removed and descriptions overwritten. The old glossary terms stay in the glossary."
+        "- **Update** — replace them: term definitions and column descriptions are overwritten and old "
+        "classifications removed. Classic-glossary terms are also unassigned from these columns."
     )
     c1, c2, c3 = st.columns(3)
     mode = None
@@ -2502,7 +2595,8 @@ def _hub_register_dialog():
             st.rerun()
     if mode:
         st.session_state.pop("_hub_pending_register", None)
-        _hub_finish_register(pending["rows"], pending["fields"], pending["msg_key"], pending["selected_guid"], mode)
+        _hub_finish_register(pending["rows"], pending["fields"], pending["msg_key"], pending["selected_guid"], mode,
+                             domain=domain, term_status=term_status)
         st.rerun()
 
 
