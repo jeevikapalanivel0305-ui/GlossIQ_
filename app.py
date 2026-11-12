@@ -2714,8 +2714,19 @@ def _hub_register_dialog():
 
     domain, term_status = None, "PUBLISHED"
     if "Business Term" in pending["fields"]:
-        domains, dom_err = _purview_governance_domains()
-        if domains:
+        target = st.radio(
+            "Register business terms to",
+            ["Columns (classic glossary)", "Governance domain + columns"], key="hub_reg_target",
+            help="Columns: each term is created in the classic glossary and put directly on its column "
+                 "(the asset's Schema tab). Governance domain: the term is also created in a domain.")
+        if target.startswith("Columns"):
+            st.caption("Terms go into the classic glossary and onto each column in the asset's Schema tab.")
+            domains, dom_err = [], None
+        else:
+            domains, dom_err = _purview_governance_domains()
+        if target.startswith("Columns"):
+            pass
+        elif domains:
             labels = [f"{d['name']}  ({d['status']})" for d in domains]
             idx = st.selectbox("Governance domain", range(len(domains)), format_func=lambda i: labels[i],
                                key="hub_reg_domain",
