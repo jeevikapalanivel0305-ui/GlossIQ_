@@ -115,6 +115,26 @@ def main():
 
     print(f"\nLinks that are not glossary-term assignments: {bad}")
 
+    # 4. Unified Catalog: governance domains and whether asset curation looks enabled
+    uc = f"https://{c['account_name']}.purview.azure.com/datagovernance/catalog"
+    uc_v = {"api-version": "2025-09-15-preview"}
+    r = requests.get(uc + "/businessdomains", headers=h, params=uc_v, timeout=30)
+    print("\n== Unified Catalog ==")
+    if r.status_code != 200:
+        print(f"  Not available (HTTP {r.status_code}): {r.text[:200]}")
+        return
+    domains = r.json().get("value", [])
+    staging = any(d.get("name") == ".StagingDomain" for d in domains)
+    terms = requests.get(uc + "/terms", headers=h, params={**uc_v, "top": 100}, timeout=30).json().get("value", [])
+    migrated = sum(1 for t in terms if t.get("isMigrated"))
+    print(f"  Governance domains: {len(domains)}  ({', '.join(d.get('name', '') for d in domains[:8])}"
+          f"{', ...' if len(domains) > 8 else ''})")
+    print(f"  Domain terms (first 100): {len(terms)}, migrated from classic: {migrated}")
+    print(f"  .StagingDomain present: {staging}")
+    print("  Asset curation: " + ("LOOKS ENABLED - classic glossary is read-only; terms go on columns as domain terms"
+                                   if staging or migrated else
+                                   "looks OFF - only classic terms can be put on columns"))
+
 
 if __name__ == "__main__":
     main()

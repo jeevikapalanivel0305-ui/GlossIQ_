@@ -647,24 +647,75 @@ class PurviewConnector:
                 return t
         return None
 
-    def create_domain_term(self, name, description, domain_id, status="PUBLISHED"):
-        """Create a glossary term in a governance domain → term dict."""
+    def resolve_owner_id(self, owner):
+        """
+        Entra object ID for an owner given as an object ID (returned as is) or an email / UPN
+        (looked up in Microsoft Graph, which needs the app permission User.Read.All).
+        """
+        import re as _re
+        owner = (owner or "").strip()
+        if _re.fullmatch(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}", owner):
+            return owner.lower()
+        tok = requests.post(
+            f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token",
+            data={"grant_type": "client_credentials", "client_id": self.client_id,
+                  "client_secret": self.client_secret, "scope": "https://graph.microsoft.com/.default"},
+            timeout=30)
+        if tok.status_code != 200:
+            raise Exception(f"couldn't sign in to Microsoft Graph to look up owner '{owner}'")
+        r = requests.get(f"https://graph.microsoft.com/v1.0/users/{requests.utils.quote(owner)}",
+                         headers={"Authorization": "Bearer " + tok.json()["access_token"]},
+                         params={"$select": "id"}, timeout=30)
+        if r.status_code == 200:
+            return r.json()["id"]
+        if r.status_code == 404:
+            raise Exception(f"no user '{owner}' was found in this tenant")
+        raise Exception(f"couldn't look up owner '{owner}' by email (HTTP {r.status_code}). Enter the owner's "
+                        "Entra object ID instead, or grant the app the Microsoft Graph permission User.Read.All")
+
+    def create_domain_term(self, name, description, domain_id, status="PUBLISHED", owners=None):
+        """Create a glossary term in a governance domain → term dict.
+        owners: [{"id": <Entra object ID>, "description": <name>}]"""
         import uuid
         payload = {"id": str(uuid.uuid4()), "name": name, "domain": domain_id,
                    "status": status, "description": description or ""}
+        if owners:
+            payload["contacts"] = {"owner": owners}
         r = self._uc("post", "terms", json=payload)
         if r.status_code not in (200, 201):
             raise Exception(f"creating term '{name}' in the governance domain failed (HTTP {r.status_code}): {r.text[:300]}")
         return r.json()
 
-    def update_domain_term_description(self, term, description):
-        """Replace a governance-domain term's description (full PUT of the term)."""
+    def update_domain_term(self, term, description=None, owners=None):
+        """Replace a governance-domain term's description and/or owners (full PUT of the term).
+        None leaves that part as it is."""
         body = {k: v for k, v in term.items() if k != "systemData"}
-        body["description"] = description
+        if description is not None:
+            body["description"] = description
+        if owners is not None:
+            body["contacts"] = {**(body.get("contacts") or {}), "owner": owners}
         r = self._uc("put", f"terms/{term['id']}", json=body)
         if r.status_code not in (200, 201):
             raise Exception(f"updating term '{term.get('name')}' failed (HTTP {r.status_code}): {r.text[:300]}")
         return r.json()
+
+    def update_domain_term_description(self, term, description):
+        return self.update_domain_term(term, description=description)
+
+    def link_domain_term_to_column(self, term_id, column_guid, note=""):
+        """
+        Link a governance-domain term to a column (Data Map column GUID). Purview only keeps
+        this when the tenant has "asset curation" enabled; returns True only when the link
+        reads back from the term.
+        """
+        def _linked():
+            r = self._uc("get", f"terms/{term_id}/relationships", {"entityType": "DATACOLUMN"})
+            return r.status_code == 200 and column_guid in {x.get("entityId") for x in r.json().get("value", [])}
+        if _linked():
+            return True
+        self._uc("post", f"terms/{term_id}/relationships", {"entityType": "DATACOLUMN"},
+                 json={"entityId": column_guid, "relationshipType": "Related", "description": note})
+        return _linked()
 
     def get_uc_asset_id(self, datamap_guid):
         """Unified Catalog data-asset id for a Data Map entity GUID, or None if it isn't in the catalog."""

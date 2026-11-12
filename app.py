@@ -2457,7 +2457,7 @@ def _hub_ordered_rows(rows_df):
 
 
 def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="insert",
-                              domain=None, term_status="PUBLISHED"):
+                              domain=None, term_status="PUBLISHED", owners=None):
     """
     Register Glossary Hub rows to Microsoft Purview, sending only `info_fields`:
       Business Term  → with `domain` ({id, name}): create/reuse the term in that governance domain
@@ -2491,6 +2491,38 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
 
     lookup_cache = {}
     kept_desc, removed = [], {"terms": 0, "classifications": 0}
+    on_column = {"domain": 0, "classic": 0}
+    classic = {"guid": glossary_guid}
+
+    def _classic_assign(term_name, term_desc, entity_guid):
+        """Create/reuse a classic glossary term and assign it to the column (or table). → term GUID"""
+        if not classic["guid"]:
+            gl = connector.get_glossaries()
+            gl = gl[0] if isinstance(gl, list) and gl else gl if isinstance(gl, dict) else {}
+            classic["guid"] = gl.get("guid")
+            if not classic["guid"]:
+                raise Exception("no classic glossary exists in this Purview account to put the term on the column")
+        existing = connector.get_term_by_name(term_name, glossary_guid=classic["guid"])
+        if existing:
+            # Insert never overwrites an existing term's definition; Update does
+            if replace and term_desc is not None:
+                connector.update_glossary_term(existing, term_name, term_desc, classic["guid"])
+            guid = existing
+        else:
+            result = connector.create_glossary_term(term_name, term_desc or "", classic["guid"])
+            guid = result.get("guid") if isinstance(result, dict) else None
+        if not guid:
+            raise Exception("Purview did not return a glossary term id")
+        if not connector.assign_term_to_entity(guid, entity_guid):
+            raise Exception(f"putting the term on the column was rejected — {connector.last_error}")
+        if replace:
+            # Unassign the column's previous classic terms (the glossary terms themselves are kept)
+            for old in connector.get_entity_glossary_state(entity_guid)["terms"]:
+                if old["guid"] and old["guid"] != guid:
+                    connector.unassign_term_from_entity(old["guid"], entity_guid)
+                    removed["terms"] += 1
+        return guid
+
     ordered = _hub_ordered_rows(rows_df)
     with st.spinner(f"Registering {len(rows_df)} term(s) to Microsoft Purview…"):
         for row in ordered:
@@ -2517,12 +2549,19 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
                         domain_terms[key] = connector.find_domain_term(term_name, domain["id"])
                     term = domain_terms[key]
                     if term:
-                        # Insert never overwrites an existing term's definition; Update does
-                        if replace and term_desc is not None and term_desc != (term.get("description") or ""):
-                            term = domain_terms[key] = connector.update_domain_term_description(term, term_desc)
+                        # Insert never overwrites an existing term's definition or owners; Update does.
+                        # Insert still adds the owner to a term that has none.
+                        cur_owners = (term.get("contacts") or {}).get("owner") or []
+                        new_desc = term_desc if (replace and term_desc is not None
+                                                 and term_desc != (term.get("description") or "")) else None
+                        new_owners = owners if owners and (
+                            (replace and {o["id"] for o in cur_owners} != {o["id"] for o in owners})
+                            or not cur_owners) else None
+                        if new_desc is not None or new_owners is not None:
+                            term = domain_terms[key] = connector.update_domain_term(term, new_desc, new_owners)
                     else:
                         term = domain_terms[key] = connector.create_domain_term(
-                            term_name, term_desc or "", domain["id"], status=term_status)
+                            term_name, term_desc or "", domain["id"], status=term_status, owners=owners)
                     final_term_guid = term.get("id")
                     if not final_term_guid:
                         raise Exception("Purview did not return a term id")
@@ -2534,29 +2573,19 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
                     note = "" if table_guid == purview_entity_guid else f"Column: {physical_term}"
                     if not connector.link_domain_term_to_asset(final_term_guid, uc_assets[table_guid], note):
                         raise Exception(f"linking the term to {_cell_str(row, 'table_name')} was rejected — {connector.last_error}")
+                    # Put the term on the column itself (the asset's Schema tab). Tenants with asset
+                    # curation keep a domain-term link on the column; others only show classic terms
+                    # there, so the classic glossary carries it.
+                    is_column = table_guid != purview_entity_guid
+                    if is_column and connector.link_domain_term_to_column(final_term_guid, purview_entity_guid, note):
+                        on_column["domain"] += 1
+                    else:
+                        _classic_assign(term_name, term_desc, purview_entity_guid)
+                        on_column["classic"] += 1
                     sent.append("Business Term")
                 elif term_name:
                     # Description=None keeps whatever description the term already has in Purview
-                    term_desc = definition if send_desc else None
-                    existing_term_guid = connector.get_term_by_name(term_name, glossary_guid=glossary_guid)
-                    if existing_term_guid:
-                        # Insert never overwrites an existing term's definition; Update does
-                        if replace and term_desc is not None:
-                            connector.update_glossary_term(existing_term_guid, term_name, term_desc, glossary_guid)
-                        final_term_guid = existing_term_guid
-                    else:
-                        result = connector.create_glossary_term(term_name, term_desc or "", glossary_guid)
-                        final_term_guid = result.get("guid") if isinstance(result, dict) else None
-                    if not final_term_guid:
-                        raise Exception("Purview did not return a glossary term id")
-                    if not connector.assign_term_to_entity(final_term_guid, purview_entity_guid):
-                        raise Exception(f"assigning the term to {physical_term} was rejected — {connector.last_error}")
-                    if replace:
-                        # Unassign the column's previous terms (the glossary terms themselves are kept)
-                        for old in connector.get_entity_glossary_state(purview_entity_guid)["terms"]:
-                            if old["guid"] and old["guid"] != final_term_guid:
-                                connector.unassign_term_from_entity(old["guid"], purview_entity_guid)
-                                removed["terms"] += 1
+                    final_term_guid = _classic_assign(term_name, definition if send_desc else None, purview_entity_guid)
                     sent.append("Business Term")
                 if definition:
                     # The description also goes on the column itself, so it shows on the asset's
@@ -2599,6 +2628,9 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
         return False, "<br>".join([head] + [_html.escape(e) for e in errors])
     if domain:
         g_info = f" in governance domain '<b>{_html.escape(domain['name'])}</b>'"
+        if on_column["domain"] or on_column["classic"]:
+            g_info += (f". Terms put on columns: {on_column['domain']} as domain terms, "
+                       f"{on_column['classic']} through the classic glossary")
     elif glossary_name:
         g_info = f" in Purview Glossary '<b>{_html.escape(glossary_name)}</b>'"
     else:
@@ -2617,9 +2649,10 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
     return True, msg
 
 
-def _hub_finish_register(rows_df, info_fields, msg_key, selected_guid, mode, domain=None, term_status="PUBLISHED"):
+def _hub_finish_register(rows_df, info_fields, msg_key, selected_guid, mode, domain=None, term_status="PUBLISHED",
+                         owners=None):
     st.session_state[msg_key] = _register_rows_to_purview(rows_df, info_fields, selected_guid, mode=mode,
-                                                          domain=domain, term_status=term_status)
+                                                          domain=domain, term_status=term_status, owners=owners)
     ok = st.session_state[msg_key][0]
     st.toast("Registered to Microsoft Purview" if ok else "Registration finished with errors")
 
@@ -2653,8 +2686,18 @@ def _hub_register_dialog():
             term_status = st.radio("Term status", ["PUBLISHED", "DRAFT"], horizontal=True, key="hub_reg_status",
                                    format_func=str.title,
                                    help="Status for terms that don't exist in the domain yet. Existing terms keep theirs.")
-            st.caption("Column terms are linked to the column's table in the Unified Catalog, with the column "
-                       "named in the link. Purview doesn't support linking domain terms to single columns.")
+            oc1, oc2 = st.columns(2)
+            with oc1:
+                st.text_input("Owner name", key="hub_reg_owner_name", placeholder="e.g. Jeevika Palanivelu")
+            with oc2:
+                st.text_input("Owner email or Entra object ID", key="hub_reg_owner_id",
+                              placeholder="name@company.com or 00000000-0000-…",
+                              help="Purview stores the owner's Entra object ID. An email is looked up in "
+                                   "Microsoft Graph, which needs the app permission User.Read.All; "
+                                   "otherwise enter the object ID (Entra admin center → Users → the user).")
+            st.caption("Terms are created in this domain and linked to the table. On the column (Schema tab) the "
+                       "domain term is used when the tenant has asset curation enabled; otherwise the term is "
+                       "also put on the column through the classic glossary.")
         else:
             st.warning("No governance domains found in this Purview account, so terms go to the classic glossary."
                        + (f" ({dom_err})" if dom_err else ""))
@@ -2679,9 +2722,19 @@ def _hub_register_dialog():
             _hub_cancel_register()
             st.rerun()
     if mode:
+        owners = None
+        owner_ref = st.session_state.get("hub_reg_owner_id", "").strip() if domain else ""
+        if owner_ref:
+            try:
+                owner_id = _purview_connector().resolve_owner_id(owner_ref)
+            except Exception as e:
+                st.error(f"Owner: {e}")
+                return
+            owner_name = st.session_state.get("hub_reg_owner_name", "").strip()
+            owners = [{"id": owner_id, **({"description": owner_name} if owner_name else {})}]
         st.session_state.pop("_hub_pending_register", None)
         _hub_finish_register(pending["rows"], pending["fields"], pending["msg_key"], pending["selected_guid"], mode,
-                             domain=domain, term_status=term_status)
+                             domain=domain, term_status=term_status, owners=owners)
         st.rerun()
 
 
