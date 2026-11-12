@@ -2,3 +2,4 @@ streamlit>=1.61.0
 pandas
 requests
 openai
+cryptography

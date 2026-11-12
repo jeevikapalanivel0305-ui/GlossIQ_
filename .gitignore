@@ -25,3 +25,8 @@ glossary_hub.db
 
 # Scratch directory
 scratch/
+
+# Saved Purview connections (encrypted secrets) and their key
+backend/saved_connections.json
+backend/saved_connections.json.tmp
+backend/.credentials.key

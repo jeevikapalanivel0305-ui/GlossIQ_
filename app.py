@@ -20,6 +20,7 @@ from backend.persistence_manager import PersistenceManager, load_rbac, save_rbac
 from backend.workflow_manager import WorkflowManager, is_suggested
 from backend.semantic_search import semantic_search_glossary, keyword_search_glossary
 from backend import glossary_db
+from backend import credential_store
 
 st.set_page_config(
     page_title="Glossary Enricher Accelerator",
@@ -444,6 +445,59 @@ def _img_tag(filename, size=24):
     except FileNotFoundError:
         return "🔌"
 
+_NEW_CONN = "Enter new credentials"
+_PV_FIELD_KEYS = {"account_name": "mp_ac_Microsoft Purview", "tenant_id": "mp_te_Microsoft Purview",
+                  "client_id": "mp_ci_Microsoft Purview", "client_secret": "mp_cs_Microsoft Purview"}
+
+
+def _cred_key():
+    """Encryption key for saved credentials from Streamlit secrets, if one is configured."""
+    try:
+        return st.secrets.get("CREDENTIALS_KEY") or None
+    except Exception:
+        return None
+
+
+def _fill_saved_purview_creds():
+    """Saved connection picked → copy its values into the Purview fields."""
+    title = st.session_state.get("mp_saved_choice")
+    if not title or title == _NEW_CONN:
+        for k in _PV_FIELD_KEYS.values():
+            st.session_state[k] = ""
+        return
+    creds = credential_store.get(st.session_state.get("logged_in_email", ""), title, _cred_key()) or {}
+    for f, k in _PV_FIELD_KEYS.items():
+        st.session_state[k] = creds.get(f, "")
+
+
+def _delete_saved_purview_creds():
+    credential_store.delete(st.session_state.get("logged_in_email", ""), st.session_state.get("mp_saved_choice"))
+    st.session_state["mp_saved_choice"] = _NEW_CONN
+
+
+@st.dialog("Save Purview credentials?")
+def _save_purview_creds_dialog():
+    creds = st.session_state["_offer_save_purview_creds"]
+    user = st.session_state.get("logged_in_email", "")
+    st.markdown(f"Connected to **{_html.escape(creds['account_name'])}**. Save these credentials so you "
+                "can pick them next time instead of typing them again?")
+    title = st.text_input("Title", key="mp_save_title", placeholder="e.g. iLink governance hub")
+    if title.strip() in credential_store.list_titles(user):
+        st.caption("A saved connection with this title exists and will be replaced.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Save", type="primary", use_container_width=True, disabled=not title.strip(), key="mp_save_yes"):
+            credential_store.save(user, title, creds, _cred_key())
+            st.session_state.pop("_offer_save_purview_creds", None)
+            st.session_state.pop("mp_save_title", None)
+            st.toast(f"Saved as '{title.strip()}'")
+            st.rerun()
+    with c2:
+        if st.button("Don't save", use_container_width=True, key="mp_save_no"):
+            st.session_state.pop("_offer_save_purview_creds", None)
+            st.rerun()
+
+
 def _configure_integration_dialog(name):
     """Set flag to open the connector config panel and rerun to show it."""
     st.session_state["_open_integration_config"] = name
@@ -466,10 +520,21 @@ def _show_connector_dialog(name):
         st.text_input("Default Channel", value=cfg.get('channel', '#data-governance'), key=f"int_ch_{name}")
     elif name == "Microsoft Purview":
         st.info("Authenticate to Microsoft Purview data map.")
-        st.text_input("Account Name", value=st.session_state.connector_creds.get('purview_account_name',''), key=f"mp_ac_{name}")
-        st.text_input("Tenant ID", value=st.session_state.connector_creds.get('purview_tenant_id',''), key=f"mp_te_{name}")
-        st.text_input("Client ID", value=st.session_state.connector_creds.get('purview_client_id',''), key=f"mp_ci_{name}")
-        st.text_input("Client Secret", type="password", value=st.session_state.connector_creds.get('purview_client_secret',''), key=f"mp_cs_{name}")
+        _user = st.session_state.get("logged_in_email", "")
+        _saved = credential_store.list_titles(_user)
+        # Fields start from the active credentials; a saved connection overwrites them
+        for _f, _k in _PV_FIELD_KEYS.items():
+            st.session_state.setdefault(_k, st.session_state.connector_creds.get(f"purview_{_f}", ""))
+        if _saved:
+            st.selectbox("Saved connection", [_NEW_CONN] + _saved, key="mp_saved_choice",
+                         on_change=_fill_saved_purview_creds,
+                         help="Fill the fields below from credentials you saved earlier.")
+            if st.session_state.get("mp_saved_choice", _NEW_CONN) != _NEW_CONN:
+                st.button("Delete this saved connection", key="mp_saved_delete", on_click=_delete_saved_purview_creds)
+        st.text_input("Account Name", key=_PV_FIELD_KEYS["account_name"])
+        st.text_input("Tenant ID", key=_PV_FIELD_KEYS["tenant_id"])
+        st.text_input("Client ID", key=_PV_FIELD_KEYS["client_id"])
+        st.text_input("Client Secret", type="password", key=_PV_FIELD_KEYS["client_secret"])
     else:
         st.text_input("API Endpoint", value=cfg['api_endpoint'], key=f"int_ep_{name}")
         st.text_input("API Token / Secret", type="password", value=cfg['api_token'], key=f"int_tk_{name}")
@@ -494,6 +559,11 @@ def _show_connector_dialog(name):
                 success, msg = connector.authenticate()
                 if success:
                     st.session_state.is_authenticated = True
+                    # Offer to save these credentials unless they're already saved
+                    _new_creds = {"account_name": account_name, "tenant_id": tenant_id,
+                                  "client_id": client_id, "client_secret": client_secret}
+                    if not credential_store.find_title(st.session_state.get("logged_in_email", ""), _new_creds, _cred_key()):
+                        st.session_state["_offer_save_purview_creds"] = _new_creds
                     try:
                         st.session_state.purview_collections = connector.get_collections()
                     except:
@@ -547,6 +617,8 @@ def render_integrations_tab():
     _open_cfg = st.session_state.pop("_open_integration_config", None)
     if _open_cfg and _open_cfg in connectors:
         _show_connector_dialog(_open_cfg)
+    elif st.session_state.get("_offer_save_purview_creds"):
+        _save_purview_creds_dialog()
 
     # ── shared card renderer ─────────────────────────────────────────────────
     def _render_connector_card(col, name, cfg):
@@ -1608,15 +1680,26 @@ def render_search_tab():
                 )
                 try:
                     url = f"https://{st.session_state.connector_creds['purview_account_name']}.purview.azure.com/datamap/api/search/query"
-                    # Purview rejects an empty filter, so only send one for a specific source type
-                    payload = {"keywords": f"{search_query}*", "limit": 100}
-                    if selected_source_type != "All":
-                        payload["filter"] = {"entityType": source_type_options[selected_source_type]}
+                    # Purview returns at most 100 results per page, ranked across every kind of asset.
+                    # "All" therefore asks for tables only, and every source type reads all pages,
+                    # so no source's tables are cut off by other sources ranking higher.
+                    payload = {"keywords": f"{search_query}*", "limit": 100,
+                               "filter": ({"entityType": source_type_options[selected_source_type]}
+                                          if selected_source_type != "All" else {"objectType": "Tables"})}
                     connector.authenticate()
                     import requests as _req
-                    r = _req.post(url, headers=connector._headers(), json=payload, timeout=30)
+                    raw_results = []
+                    for _page in range(20):   # up to 2,000 assets
+                        r = _req.post(url, headers=connector._headers(), params={"api-version": "2023-09-01"},
+                                      json=payload, timeout=30)
+                        if r.status_code != 200:
+                            break
+                        raw_results += r.json().get('value', [])
+                        _token = r.json().get('continuationToken')
+                        if not _token:
+                            break
+                        payload["continuationToken"] = _token
                     if r.status_code == 200:
-                        raw_results = r.json().get('value', [])
                         filtered_results = [res for res in raw_results if res.get('name', '').lower().startswith(search_query.lower())]
                         # Without a type filter Purview also returns glossary terms, schemas, etc. — keep tables/views
                         filtered_results = [res for res in filtered_results
@@ -2452,8 +2535,6 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
                     if not connector.link_domain_term_to_asset(final_term_guid, uc_assets[table_guid], note):
                         raise Exception(f"linking the term to {_cell_str(row, 'table_name')} was rejected — {connector.last_error}")
                     sent.append("Business Term")
-                    if definition:
-                        sent.append("Description")
                 elif term_name:
                     # Description=None keeps whatever description the term already has in Purview
                     term_desc = definition if send_desc else None
@@ -2477,17 +2558,20 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
                                 connector.unassign_term_from_entity(old["guid"], purview_entity_guid)
                                 removed["terms"] += 1
                     sent.append("Business Term")
-                    if definition:
-                        sent.append("Description")
-                elif definition:
-                    # No business term sent — the description goes on the column itself.
+                if definition:
+                    # The description also goes on the column itself, so it shows on the asset's
+                    # Schema tab (with a business term it is the term's definition as well).
                     # A column holds one description: Insert keeps an existing one, Update replaces it.
                     current_desc = connector.get_entity_glossary_state(purview_entity_guid)["description"]
-                    if replace or not current_desc:
+                    if current_desc == definition:
+                        sent.append("Description")
+                    elif replace or not current_desc:
                         connector.update_entity_description(purview_entity_guid, definition)
                         sent.append("Description")
                     else:
                         kept_desc.append(physical_term)
+                        if term_name:
+                            sent.append("Description")   # still sent as the term's definition
 
                 if classification:
                     if not connector.add_classification_to_entity(purview_entity_guid, classification):
@@ -2526,7 +2610,8 @@ def _register_rows_to_purview(rows_df, info_fields, selected_guid=None, mode="in
         msg += (f"<br>Replaced: {removed['terms']} old term assignment(s) and "
                 f"{removed['classifications']} old classification(s) removed")
     if kept_desc:
-        msg += f"<br>Kept the existing Purview description for: {_html.escape(', '.join(kept_desc))}"
+        msg += (f"<br>Kept the existing column description (Insert doesn't overwrite; use Update) for: "
+                f"{_html.escape(', '.join(kept_desc))}")
     if skipped:
         msg += f"<br>Skipped {len(skipped)} (no selected information to send): {_html.escape(', '.join(skipped))}"
     return True, msg
