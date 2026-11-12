@@ -458,21 +458,32 @@ def _cred_key():
         return None
 
 
-def _fill_saved_purview_creds():
-    """Saved connection picked → copy its values into the Purview fields."""
+def _load_saved_purview_creds():
+    """Load button: check the PIN, then copy the saved values into the Purview fields."""
     title = st.session_state.get("mp_saved_choice")
-    if not title or title == _NEW_CONN:
-        for k in _PV_FIELD_KEYS.values():
-            st.session_state[k] = ""
-        return
-    creds = credential_store.get(st.session_state.get("logged_in_email", ""), title, _cred_key()) or {}
-    for f, k in _PV_FIELD_KEYS.items():
-        st.session_state[k] = creds.get(f, "")
+    try:
+        creds = credential_store.unlock(st.session_state.get("logged_in_email", ""), title,
+                                        st.session_state.get("mp_saved_pin", ""), _cred_key())
+    except credential_store.PinError as e:
+        st.session_state["mp_saved_msg"] = (False, str(e))
+    else:
+        for f, k in _PV_FIELD_KEYS.items():
+            st.session_state[k] = creds.get(f, "")
+        st.session_state["mp_saved_msg"] = (True, f"Loaded '{title}'. Click Save & Connect.")
+    st.session_state["mp_saved_pin"] = ""
 
 
 def _delete_saved_purview_creds():
-    credential_store.delete(st.session_state.get("logged_in_email", ""), st.session_state.get("mp_saved_choice"))
-    st.session_state["mp_saved_choice"] = _NEW_CONN
+    title = st.session_state.get("mp_saved_choice")
+    try:
+        credential_store.delete(st.session_state.get("logged_in_email", ""), title,
+                                st.session_state.get("mp_saved_pin", ""))
+    except credential_store.PinError as e:
+        st.session_state["mp_saved_msg"] = (False, f"Enter the right PIN to delete it. {e}")
+    else:
+        st.session_state["mp_saved_choice"] = _NEW_CONN
+        st.session_state["mp_saved_msg"] = (True, f"Deleted '{title}'.")
+    st.session_state["mp_saved_pin"] = ""
 
 
 @st.dialog("Save Purview credentials?")
@@ -484,12 +495,25 @@ def _save_purview_creds_dialog():
     title = st.text_input("Title", key="mp_save_title", placeholder="e.g. iLink governance hub")
     if title.strip() in credential_store.list_titles(user):
         st.caption("A saved connection with this title exists and will be replaced.")
+    p1, p2 = st.columns(2)
+    with p1:
+        pin = st.text_input("PIN", type="password", max_chars=8, key="mp_save_pin",
+                            help=f"{credential_store.PIN_RULE}. You'll enter it to load these credentials.")
+    with p2:
+        pin2 = st.text_input("Confirm PIN", type="password", max_chars=8, key="mp_save_pin2")
+    pin_problem = ("" if not pin else
+                   f"The PIN must be {credential_store.PIN_RULE}." if not credential_store.valid_pin(pin) else
+                   "The PINs don't match." if pin2 and pin != pin2 else "")
+    if pin_problem:
+        st.caption(f":red[{pin_problem}]")
+    can_save = bool(title.strip()) and credential_store.valid_pin(pin) and pin == pin2
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Save", type="primary", use_container_width=True, disabled=not title.strip(), key="mp_save_yes"):
-            credential_store.save(user, title, creds, _cred_key())
+        if st.button("Save", type="primary", use_container_width=True, disabled=not can_save, key="mp_save_yes"):
+            credential_store.save(user, title, creds, pin, _cred_key())
             st.session_state.pop("_offer_save_purview_creds", None)
-            st.session_state.pop("mp_save_title", None)
+            for k in ("mp_save_title", "mp_save_pin", "mp_save_pin2"):
+                st.session_state.pop(k, None)
             st.toast(f"Saved as '{title.strip()}'")
             st.rerun()
     with c2:
@@ -527,10 +551,24 @@ def _show_connector_dialog(name):
             st.session_state.setdefault(_k, st.session_state.connector_creds.get(f"purview_{_f}", ""))
         if _saved:
             st.selectbox("Saved connection", [_NEW_CONN] + _saved, key="mp_saved_choice",
-                         on_change=_fill_saved_purview_creds,
-                         help="Fill the fields below from credentials you saved earlier.")
-            if st.session_state.get("mp_saved_choice", _NEW_CONN) != _NEW_CONN:
-                st.button("Delete this saved connection", key="mp_saved_delete", on_click=_delete_saved_purview_creds)
+                         help="Pick credentials you saved earlier, enter their PIN and load them.")
+            _choice = st.session_state.get("mp_saved_choice", _NEW_CONN)
+            if _choice != _NEW_CONN:
+                if credential_store.has_pin(_user, _choice):
+                    st.text_input("PIN", type="password", max_chars=8, key="mp_saved_pin",
+                                  placeholder=f"PIN for '{_choice}'")
+                else:
+                    st.caption("Saved before PINs were added — load it, then connect and save it again with a PIN.")
+                _b1, _b2 = st.columns(2)
+                with _b1:
+                    st.button("Load credentials", type="primary", use_container_width=True, key="mp_saved_load",
+                              on_click=_load_saved_purview_creds)
+                with _b2:
+                    st.button("Delete saved connection", use_container_width=True, key="mp_saved_delete",
+                              on_click=_delete_saved_purview_creds)
+            _msg = st.session_state.pop("mp_saved_msg", None)
+            if _msg:
+                (st.success if _msg[0] else st.error)(_msg[1])
         st.text_input("Account Name", key=_PV_FIELD_KEYS["account_name"])
         st.text_input("Tenant ID", key=_PV_FIELD_KEYS["tenant_id"])
         st.text_input("Client ID", key=_PV_FIELD_KEYS["client_id"])
