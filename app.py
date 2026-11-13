@@ -136,6 +136,7 @@ def render_login_page():
                         st.session_state.logged_in_email = email.strip().lower()
                         st.session_state.user_name = user_record.get("name", email.strip())
                         st.session_state.user_role = user_record.get("role", "Reader")
+                        _remember_session()
                         st.rerun()
                     else:
                         st.error("Invalid email or password. Only registered users can log in.")
@@ -392,6 +393,7 @@ def render_sidebar():
             st.session_state.user_role = new_role
             st.session_state.logged_in = False
             st.session_state.logged_in_email = ""
+            _forget_session()
             st.rerun()
 
         # Generate initials from the logged-in user's name
@@ -410,6 +412,7 @@ def render_sidebar():
         if st.button("Logout", key="logout_btn", icon=":material/logout:", use_container_width=True):
             st.session_state.logged_in = False
             st.session_state.logged_in_email = ""
+            _forget_session()
             st.rerun()
 
 def render_dashboard_header(view_name):
@@ -451,11 +454,111 @@ _PV_FIELD_KEYS = {"account_name": "mp_ac_Microsoft Purview", "tenant_id": "mp_te
 
 
 def _cred_key():
-    """Encryption key for saved credentials from Streamlit secrets, if one is configured."""
+    """Encryption key for saved credentials and the browser cookies: the CREDENTIALS_KEY secret if set,
+    otherwise one derived from the default Purview client secret in Streamlit secrets (stable across
+    redeploys), otherwise None (credential_store then uses its local key file)."""
     try:
-        return st.secrets.get("CREDENTIALS_KEY") or None
+        key = st.secrets.get("CREDENTIALS_KEY")
+        if key:
+            return key
+        seed = (st.secrets.get("purview") or {}).get("client_secret")
     except Exception:
         return None
+    if not seed:
+        return None
+    import hashlib
+    return base64.urlsafe_b64encode(hashlib.sha256(b"glossiq-credentials:" + seed.encode()).digest()).decode()
+
+
+# -- Keep the sign-in, the active Purview connection and saved connections across page refreshes --
+# A refresh starts a new Streamlit session (session_state is empty) and Streamlit Cloud wipes the
+# server's disk on every redeploy, so both are also kept in the browser, encrypted with _cred_key().
+_SESSION_COOKIE, _SAVED_COOKIE = "glossiq_session", "glossiq_saved"
+_SESSION_DAYS, _SAVED_DAYS = 7, 365
+_COOKIE_MAX = 3900   # browsers drop cookies over ~4 KB
+
+
+def _cookie(name):
+    try:
+        return st.context.cookies.get(name)
+    except Exception:
+        return None
+
+
+def _queue_cookie(name, value, days):
+    if value and len(value) > _COOKIE_MAX:
+        print(f"GlossIQ: cookie {name} too large ({len(value)} bytes), not stored in the browser")
+        return
+    st.session_state.setdefault("_cookie_out", {})[name] = (value or "", days * 86400 if value else 0)
+
+
+def _remember_session():
+    """Sign-in + active Purview credentials (only if they differ from the defaults) -> browser cookie."""
+    email = st.session_state.get("logged_in_email", "")
+    if not email:
+        return
+    creds = st.session_state.get("connector_creds", {})
+    defaults = {f"purview_{k}": v for k, v in (st.secrets.get("purview", {}) or {}).items()}
+    keep = {k: v for k, v in creds.items() if k.startswith("purview_")}
+    payload = {"email": email, "creds": keep if any(keep.get(k) != defaults.get(k) for k in keep) else None}
+    _queue_cookie(_SESSION_COOKIE, credential_store.seal(payload, _cred_key()), _SESSION_DAYS)
+
+
+def _forget_session():
+    st.session_state["_session_restored"] = True   # don't sign back in from the cookie this session
+    _queue_cookie(_SESSION_COOKIE, "", 0)
+
+
+def _remember_saved_connections():
+    """This user's saved connections (secrets encrypted, PINs hashed) -> browser cookie."""
+    email = st.session_state.get("logged_in_email", "")
+    if not email:
+        return
+    if "_saved_cookie_cache" not in st.session_state:
+        st.session_state["_saved_cookie_cache"] = credential_store.unseal(_cookie(_SAVED_COOKIE), _cred_key()) or {}
+    all_users = st.session_state["_saved_cookie_cache"]
+    all_users[email] = credential_store.export_records(email)
+    _queue_cookie(_SAVED_COOKIE, credential_store.seal(all_users, _cred_key()), _SAVED_DAYS)
+
+
+def _restore_from_browser():
+    """Once per session: sign back in and reload the connection and saved connections from cookies."""
+    if not st.session_state.get("_session_restored"):
+        st.session_state["_session_restored"] = True
+        data = credential_store.unseal(_cookie(_SESSION_COOKIE), _cred_key(), max_age=_SESSION_DAYS * 86400)
+        if data and not st.session_state.get("logged_in"):
+            users, _ = load_rbac()
+            rec = users.get(data.get("email", ""))
+            if rec:
+                st.session_state.logged_in = True
+                st.session_state.logged_in_email = data["email"]
+                st.session_state.user_name = rec.get("name", data["email"])
+                st.session_state.user_role = rec.get("role", "Reader")
+                if data.get("creds"):
+                    st.session_state.connector_creds.update(data["creds"])
+                _remember_session()   # slide the 7-day window
+    email = st.session_state.get("logged_in_email", "")
+    if email and st.session_state.get("_saved_imported_for") != email:
+        st.session_state["_saved_imported_for"] = email
+        browser = credential_store.unseal(_cookie(_SAVED_COOKIE), _cred_key()) or {}
+        credential_store.import_records(email, browser.get(email))
+        if credential_store.list_titles(email):
+            _remember_saved_connections()   # also copies server-only connections into the browser
+
+
+def _sync_cookies():
+    """Write queued cookies in the browser (a 0-height script; it only re-runs when they change)."""
+    out = st.session_state.get("_cookie_out")
+    if not out:
+        return
+    data = json.dumps({n: [v, age] for n, (v, age) in sorted(out.items())})
+    components.html(
+        "<script>(function(){const d=window.parent.document;"
+        "const sec=window.parent.location.protocol==='https:'?'; Secure':'';"
+        f"const c={data};"
+        "for(const [n,[v,age]] of Object.entries(c)){"
+        "d.cookie=n+'='+v+'; path=/; max-age='+age+'; SameSite=Strict'+sec;}})();</script>",
+        height=0)
 
 
 def _load_saved_purview_creds():
@@ -483,6 +586,7 @@ def _delete_saved_purview_creds():
     else:
         st.session_state["mp_saved_choice"] = _NEW_CONN
         st.session_state["mp_saved_msg"] = (True, f"Deleted '{title}'.")
+        _remember_saved_connections()
     st.session_state["mp_saved_pin"] = ""
 
 
@@ -511,6 +615,7 @@ def _save_purview_creds_dialog():
     with c1:
         if st.button("Save", type="primary", use_container_width=True, disabled=not can_save, key="mp_save_yes"):
             credential_store.save(user, title, creds, pin, _cred_key())
+            _remember_saved_connections()
             st.session_state.pop("_offer_save_purview_creds", None)
             for k in ("mp_save_title", "mp_save_pin", "mp_save_pin2"):
                 st.session_state.pop(k, None)
@@ -597,6 +702,7 @@ def _show_connector_dialog(name):
                 success, msg = connector.authenticate()
                 if success:
                     st.session_state.is_authenticated = True
+                    _remember_session()   # keep this connection after a page refresh
                     # Offer to save these credentials unless they're already saved
                     _new_creds = {"account_name": account_name, "tenant_id": tenant_id,
                                   "client_id": client_id, "client_secret": client_secret}
@@ -4459,6 +4565,8 @@ def render_rbac_tab():
 
 
 def main():
+    _restore_from_browser()
+    _sync_cookies()
     # Gate the entire app behind login
     if not st.session_state.get('logged_in', False):
         render_login_page()

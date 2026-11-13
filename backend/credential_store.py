@@ -149,6 +149,49 @@ def delete(user, title, pin):
     _write(data)
 
 
+def seal(obj, key=None):
+    """Encrypt a JSON-able object into a cookie-safe token."""
+    return _fernet(key).encrypt(json.dumps(obj, separators=(",", ":")).encode()).decode()
+
+
+def unseal(token, key=None, max_age=None):
+    """Object from seal(), or None if it is missing, tampered with, from another key or older than max_age seconds."""
+    if not token:
+        return None
+    try:
+        return json.loads(_fernet(key).decrypt(token.encode(), ttl=max_age))
+    except (InvalidToken, ValueError, TypeError):
+        return None
+
+
+_RECORD_KEYS = (*FIELDS, "client_secret", "pin_salt", "pin_hash", "saved_at")
+
+
+def export_records(user):
+    """The user's saved connections as stored (secrets stay encrypted, PINs stay hashed)."""
+    saved = _load().get((user or "").lower(), {})
+    return {t: {k: r[k] for k in _RECORD_KEYS if k in r} for t, r in saved.items()}
+
+
+def import_records(user, records):
+    """Add saved connections kept in the browser that this server doesn't have (e.g. after a redeploy
+    wiped the server's disk). A newer copy replaces an older one. → number added or updated."""
+    if not user or not isinstance(records, dict):
+        return 0
+    data = _load()
+    mine = data.setdefault(user.lower(), {})
+    changed = 0
+    for title, rec in records.items():
+        if not (isinstance(rec, dict) and rec.get("client_secret")):
+            continue
+        if title not in mine or rec.get("saved_at", "") > mine[title].get("saved_at", ""):
+            mine[title] = {k: rec[k] for k in _RECORD_KEYS if k in rec}
+            changed += 1
+    if changed:
+        _write(data)
+    return changed
+
+
 def find_title(user, creds, key=None):
     """Title of an identical saved connection (all four fields), or None."""
     want = {f: creds.get(f, "") for f in (*FIELDS, "client_secret")}
