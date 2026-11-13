@@ -1,15 +1,22 @@
 """
 Saved Purview connections, per signed-in GlossIQ user, each protected by a PIN.
 
-Stored in backend/saved_connections.json (git-ignored). The client secret is
-encrypted with a Fernet key taken from the `CREDENTIALS_KEY` secret / environment
-variable, or else from backend/.credentials.key, which is created on first use
-(also git-ignored). Keep that key file with the JSON: without it saved secrets
-can't be read back.
+Each connection's four fields are encrypted with a key derived from its own PIN (PBKDF2 +
+random salt), so a saved connection never depends on a server key: it stays readable across
+redeploys, server restarts and secret rotations, and only its PIN opens it. The PIN itself is
+never stored, only a salted PBKDF2 hash (with a different derivation from the encryption key).
+After MAX_ATTEMPTS wrong PINs a connection is locked for LOCK_MINUTES on this server.
 
-The PIN itself is never stored, only a salted PBKDF2 hash. After MAX_ATTEMPTS
-wrong PINs a connection is locked for LOCK_MINUTES.
+Stored in backend/saved_connections.json (git-ignored). The app also keeps a copy in the browser
+(export_records / import_records), because Streamlit Cloud wipes the server's disk on redeploy.
+
+Connections saved by older versions (secret encrypted with a server key) are still read and are
+upgraded to PIN encryption the first time they are unlocked.
+
+seal()/unseal() encrypt other app data (the sign-in cookie) with the server key: the
+`CREDENTIALS_KEY` passed in / environment variable, or else backend/.credentials.key.
 """
+import base64
 import hashlib
 import hmac
 import json
@@ -23,9 +30,11 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 STORE_PATH = os.path.join(_DIR, "saved_connections.json")
 KEY_PATH = os.path.join(_DIR, ".credentials.key")
 FIELDS = ("account_name", "tenant_id", "client_id")
+ALL_FIELDS = (*FIELDS, "client_secret")
 PIN_RULE = "4 to 8 digits"
 MAX_ATTEMPTS = 5
 LOCK_MINUTES = 5
+_ITERATIONS = 200_000
 
 
 class PinError(Exception):
@@ -37,7 +46,19 @@ def valid_pin(pin):
 
 
 def _hash_pin(pin, salt):
-    return hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), 200_000).hex()
+    return hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), _ITERATIONS).hex()
+
+
+def _pin_fernet(pin, salt):
+    """Encryption key for one connection, from its PIN (separate derivation from the PIN hash)."""
+    raw = hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt) + b"glossiq-enc", _ITERATIONS)
+    return Fernet(base64.urlsafe_b64encode(raw))
+
+
+def _fingerprint(creds, salt):
+    """Salted hash of all four fields: tells whether a connection is already saved without the PIN."""
+    msg = "\x1f".join((creds.get(f) or "").strip() for f in ALL_FIELDS).encode()
+    return hmac.new(bytes.fromhex(salt), msg, hashlib.sha256).hexdigest()
 
 
 def _fernet(key=None):
@@ -66,12 +87,25 @@ def _write(data):
     os.replace(tmp, STORE_PATH)
 
 
-def _decrypt(rec, key):
+def _legacy_decrypt(rec, key):
+    """Fields of a connection saved before PIN encryption (secret encrypted with the server key)."""
     try:
         secret = _fernet(key).decrypt(rec["client_secret"].encode()).decode()
     except (InvalidToken, KeyError, ValueError):
-        secret = ""   # key changed or missing: the user re-enters the secret
+        secret = ""   # server key changed: the secret can't be recovered
     return {**{f: rec.get(f, "") for f in FIELDS}, "client_secret": secret}
+
+
+def _build_record(creds, pin):
+    salt = os.urandom(16).hex()
+    creds = {f: (creds.get(f) or "").strip() for f in ALL_FIELDS}
+    return {
+        "sealed": _pin_fernet(pin, salt).encrypt(json.dumps(creds).encode()).decode(),
+        "pin_salt": salt,
+        "pin_hash": _hash_pin(pin, salt),
+        "fingerprint": _fingerprint(creds, salt),
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 def list_titles(user):
@@ -109,13 +143,25 @@ def _check_pin(data, user, title, pin):
 
 
 def unlock(user, title, pin, key=None):
-    """{account_name, tenant_id, client_id, client_secret} if the PIN is right; raises PinError otherwise."""
+    """{account_name, tenant_id, client_id, client_secret} if the PIN is right; raises PinError otherwise.
+    An older connection is upgraded to PIN encryption here (when its PIN is known)."""
     data = _load()
     try:
         rec = _check_pin(data, user, title, pin)
+        if rec.get("sealed"):
+            try:
+                creds = json.loads(_pin_fernet(pin, rec["pin_salt"]).decrypt(rec["sealed"].encode()))
+            except (InvalidToken, ValueError):
+                raise PinError("This saved connection is damaged. Delete it and save it again.")
+        else:
+            creds = _legacy_decrypt(rec, key)
+            if valid_pin(pin) and creds["client_secret"]:
+                upgraded = _build_record(creds, pin)
+                upgraded["saved_at"] = rec.get("saved_at", upgraded["saved_at"])
+                data[(user or "").lower()][title] = upgraded
     finally:
-        _write(data)   # keep attempt counters
-    return _decrypt(rec, key)
+        _write(data)   # keep attempt counters / the upgrade
+    return {f: creds.get(f, "") for f in ALL_FIELDS}
 
 
 def save(user, title, creds, pin, key=None):
@@ -125,15 +171,8 @@ def save(user, title, creds, pin, key=None):
         raise ValueError("A title is required")
     if not valid_pin(pin):
         raise ValueError(f"The PIN must be {PIN_RULE}")
-    salt = os.urandom(16).hex()
     data = _load()
-    data.setdefault((user or "").lower(), {})[title] = {
-        **{f: (creds.get(f) or "").strip() for f in FIELDS},
-        "client_secret": _fernet(key).encrypt((creds.get("client_secret") or "").encode()).decode(),
-        "pin_salt": salt,
-        "pin_hash": _hash_pin(pin, salt),
-        "saved_at": datetime.now().isoformat(timespec="seconds"),
-    }
+    data.setdefault((user or "").lower(), {})[title] = _build_record(creds, pin)
     _write(data)
 
 
@@ -146,11 +185,73 @@ def delete(user, title, pin):
         _write(data)
         raise
     data[(user or "").lower()].pop(title, None)
+    data.setdefault("_deleted", {}).setdefault((user or "").lower(), {})[title] = \
+        datetime.now().isoformat(timespec="seconds")
     _write(data)
 
 
+def find_title(user, creds, key=None):
+    """Title of an identical saved connection (all four fields), or None. Needs no PIN."""
+    want = {f: (creds.get(f) or "").strip() for f in ALL_FIELDS}
+    saved = _load().get((user or "").lower(), {})
+    for title in list_titles(user):
+        rec = saved[title]
+        if rec.get("fingerprint"):
+            if hmac.compare_digest(_fingerprint(want, rec["pin_salt"]), rec["fingerprint"]):
+                return title
+        elif _legacy_decrypt(rec, key) == want:
+            return title
+    return None
+
+
+# ── Browser copy ────────────────────────────────────────────────────────────────────────────────
+_RECORD_KEYS = ("sealed", "pin_salt", "pin_hash", "fingerprint", "saved_at",
+                *FIELDS, "client_secret")   # the last four only on older records
+
+
+def export_records(user):
+    """The user's saved connections as stored (PIN-encrypted, PINs hashed) and recent deletions."""
+    data = _load()
+    u = (user or "").lower()
+    recs = {t: {k: r[k] for k in _RECORD_KEYS if k in r} for t, r in data.get(u, {}).items()}
+    return {"saved": recs, "deleted": data.get("_deleted", {}).get(u, {})}
+
+
+def import_records(user, exported):
+    """Merge a browser copy from export_records() into this server's store (e.g. after a redeploy
+    wiped the disk): the newer of saved / deleted wins per title. → number of changes."""
+    if not user or not isinstance(exported, dict):
+        return 0
+    if "saved" not in exported:   # copy written by the previous version: {title: record}
+        exported = {"saved": exported, "deleted": {}}
+    u = user.lower()
+    data = _load()
+    mine = data.setdefault(u, {})
+    deleted = data.setdefault("_deleted", {}).setdefault(u, {})
+    changed = 0
+    for title, when in (exported.get("deleted") or {}).items():
+        if when > deleted.get(title, ""):
+            deleted[title] = when
+            changed += 1
+        if title in mine and when >= mine[title].get("saved_at", ""):
+            mine.pop(title)
+            changed += 1
+    for title, rec in (exported.get("saved") or {}).items():
+        if not (isinstance(rec, dict) and (rec.get("sealed") or rec.get("client_secret"))):
+            continue
+        when = rec.get("saved_at", "")
+        if when <= deleted.get(title, "") or (title in mine and when <= mine[title].get("saved_at", "")):
+            continue
+        mine[title] = {k: rec[k] for k in _RECORD_KEYS if k in rec}
+        changed += 1
+    if changed:
+        _write(data)
+    return changed
+
+
+# ── Other app data (sign-in cookie) ─────────────────────────────────────────────────────────────
 def seal(obj, key=None):
-    """Encrypt a JSON-able object into a cookie-safe token."""
+    """Encrypt a JSON-able object into a cookie-safe token with the server key."""
     return _fernet(key).encrypt(json.dumps(obj, separators=(",", ":")).encode()).decode()
 
 
@@ -162,41 +263,3 @@ def unseal(token, key=None, max_age=None):
         return json.loads(_fernet(key).decrypt(token.encode(), ttl=max_age))
     except (InvalidToken, ValueError, TypeError):
         return None
-
-
-_RECORD_KEYS = (*FIELDS, "client_secret", "pin_salt", "pin_hash", "saved_at")
-
-
-def export_records(user):
-    """The user's saved connections as stored (secrets stay encrypted, PINs stay hashed)."""
-    saved = _load().get((user or "").lower(), {})
-    return {t: {k: r[k] for k in _RECORD_KEYS if k in r} for t, r in saved.items()}
-
-
-def import_records(user, records):
-    """Add saved connections kept in the browser that this server doesn't have (e.g. after a redeploy
-    wiped the server's disk). A newer copy replaces an older one. → number added or updated."""
-    if not user or not isinstance(records, dict):
-        return 0
-    data = _load()
-    mine = data.setdefault(user.lower(), {})
-    changed = 0
-    for title, rec in records.items():
-        if not (isinstance(rec, dict) and rec.get("client_secret")):
-            continue
-        if title not in mine or rec.get("saved_at", "") > mine[title].get("saved_at", ""):
-            mine[title] = {k: rec[k] for k in _RECORD_KEYS if k in rec}
-            changed += 1
-    if changed:
-        _write(data)
-    return changed
-
-
-def find_title(user, creds, key=None):
-    """Title of an identical saved connection (all four fields), or None."""
-    want = {f: creds.get(f, "") for f in (*FIELDS, "client_secret")}
-    saved = _load().get((user or "").lower(), {})
-    for title in list_titles(user):
-        if _decrypt(saved[title], key) == want:
-            return title
-    return None

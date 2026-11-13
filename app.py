@@ -472,10 +472,13 @@ def _cred_key():
 
 # -- Keep the sign-in, the active Purview connection and saved connections across page refreshes --
 # A refresh starts a new Streamlit session (session_state is empty) and Streamlit Cloud wipes the
-# server's disk on every redeploy, so both are also kept in the browser, encrypted with _cred_key().
+# server's disk on every redeploy, so both are also kept in the browser. The sign-in cookie is
+# encrypted with _cred_key(); saved connections are already encrypted with their own PINs, so their
+# browser copy needs no server key and survives key or secret changes.
 _SESSION_COOKIE, _SAVED_COOKIE = "glossiq_session", "glossiq_saved"
-_SESSION_DAYS, _SAVED_DAYS = 7, 365
-_COOKIE_MAX = 3900   # browsers drop cookies over ~4 KB
+_SESSION_DAYS, _SAVED_DAYS = 7, 3650
+_COOKIE_MAX = 3800    # browsers drop cookies over ~4 KB, so larger values are split
+_SAVED_CHUNKS = 8     # glossiq_saved_0 .. _7
 
 
 def _cookie(name):
@@ -509,16 +512,42 @@ def _forget_session():
     _queue_cookie(_SESSION_COOKIE, "", 0)
 
 
+def _read_saved_cookie():
+    """{user: exported records} kept in the browser (split over glossiq_saved_0.., zlib + base64)."""
+    import zlib
+    parts = []
+    for i in range(_SAVED_CHUNKS):
+        part = _cookie(f"{_SAVED_COOKIE}_{i}")
+        if not part:
+            break
+        parts.append(part)
+    if parts:
+        try:
+            return json.loads(zlib.decompress(base64.urlsafe_b64decode("".join(parts))))
+        except Exception:
+            return {}
+    # copy written by the previous version (one cookie, encrypted with the server key)
+    return credential_store.unseal(_cookie(_SAVED_COOKIE), _cred_key()) or {}
+
+
 def _remember_saved_connections():
-    """This user's saved connections (secrets encrypted, PINs hashed) -> browser cookie."""
+    """This user's saved connections (PIN-encrypted, PINs hashed) -> browser cookies."""
+    import zlib
     email = st.session_state.get("logged_in_email", "")
     if not email:
         return
     if "_saved_cookie_cache" not in st.session_state:
-        st.session_state["_saved_cookie_cache"] = credential_store.unseal(_cookie(_SAVED_COOKIE), _cred_key()) or {}
+        st.session_state["_saved_cookie_cache"] = _read_saved_cookie()
     all_users = st.session_state["_saved_cookie_cache"]
     all_users[email] = credential_store.export_records(email)
-    _queue_cookie(_SAVED_COOKIE, credential_store.seal(all_users, _cred_key()), _SAVED_DAYS)
+    value = base64.urlsafe_b64encode(zlib.compress(json.dumps(all_users, separators=(",", ":")).encode(), 9)).decode()
+    chunks = [value[i:i + _COOKIE_MAX] for i in range(0, len(value), _COOKIE_MAX)]
+    if len(chunks) > _SAVED_CHUNKS:
+        print(f"GlossIQ: saved connections too large for the browser ({len(value)} bytes)")
+        return
+    for i in range(_SAVED_CHUNKS):
+        _queue_cookie(f"{_SAVED_COOKIE}_{i}", chunks[i] if i < len(chunks) else "", _SAVED_DAYS)
+    _queue_cookie(_SAVED_COOKIE, "", 0)   # remove the previous version's cookie
 
 
 def _restore_from_browser():
@@ -540,9 +569,9 @@ def _restore_from_browser():
     email = st.session_state.get("logged_in_email", "")
     if email and st.session_state.get("_saved_imported_for") != email:
         st.session_state["_saved_imported_for"] = email
-        browser = credential_store.unseal(_cookie(_SAVED_COOKIE), _cred_key()) or {}
+        browser = _read_saved_cookie()
         credential_store.import_records(email, browser.get(email))
-        if credential_store.list_titles(email):
+        if credential_store.list_titles(email) or browser.get(email):
             _remember_saved_connections()   # also copies server-only connections into the browser
 
 
